@@ -548,6 +548,7 @@ export function resolveLiveStemSectionClock(input: {
 }
 
 type LiveStemSectionEvidence = LiveStemTempoEvidence & {
+  stemType?: string;
   recipientBeatGridMs?: unknown;
   donorBeatGridMs?: unknown;
   recipientVocalActivityStartsMs?: unknown;
@@ -755,6 +756,32 @@ function measuredRollingWindows(section: LiveStemSection): PassageRollingWindow[
     : null;
 }
 
+/**
+ * Compares the requested isolated role's local activity shape. This is
+ * deliberately a ranking tie-breaker, not a compatibility gate: the scale
+ * measures level-shape similarity, not perceived musical quality.
+ */
+function sameRoleActivitySimilarity(
+  recipient: PassageRollingWindow,
+  donor: PassageRollingWindow,
+  stemType: string | undefined,
+): number | null {
+  if (!stemType
+    || recipient.stemActivityByRole?.status !== "measured"
+    || donor.stemActivityByRole?.status !== "measured") return null;
+  const recipientRole = recipient.stemActivityByRole.value.find((entry) => entry.stemType === stemType);
+  const donorRole = donor.stemActivityByRole.value.find((entry) => entry.stemType === stemType);
+  if (!recipientRole || !donorRole
+    || recipientRole.relativeRmsByBeat.length !== donorRole.relativeRmsByBeat.length
+    || recipientRole.relativeRmsByBeat.length !== recipient.endBeatIndex - recipient.startBeatIndex
+    || donorRole.relativeRmsByBeat.length !== donor.endBeatIndex - donor.startBeatIndex) return null;
+  const differences = recipientRole.relativeRmsByBeat.map((value, index) =>
+    Math.abs(value - donorRole.relativeRmsByBeat[index]!),
+  );
+  if (!differences.length || differences.some((value) => !Number.isFinite(value))) return null;
+  return Math.max(0, Math.min(1, 1 - differences.reduce((total, value) => total + value, 0) / differences.length));
+}
+
 function hasReliableLocalPassageBeatEvidence(evidence: LiveStemSectionEvidence): boolean {
   const confidentGrid = (confidence: number | null | undefined) =>
     typeof confidence === "number" && Number.isFinite(confidence) && confidence >= 0.6;
@@ -859,6 +886,11 @@ function livePhraseSectionAlignmentCandidates(
         ? score
         : score * (1 - LIVE_VOCAL_TIMING_RANK_WEIGHT)
           + vocalTiming.vocalTimingSimilarity * LIVE_VOCAL_TIMING_RANK_WEIGHT;
+      const roleActivitySimilarity = sameRoleActivitySimilarity(
+        recipientWindow,
+        donorWindow,
+        evidence.stemType,
+      );
       const positionDistance = recipientTrackEnd > 0 && donorTrackEnd > 0
         ? Math.abs(
           (donorWindow.startBeatIndex / donorTrackEnd)
@@ -901,6 +933,8 @@ function livePhraseSectionAlignmentCandidates(
         recipientBeatConfidence: evidence.recipientBeatConfidence ?? null,
         donorBeatConfidence: evidence.donorBeatConfidence ?? null,
         transpositionSemitones: similarity.transpositionSemitones,
+        roleActivitySimilarity,
+        roleActivityType: roleActivitySimilarity === null ? null : evidence.stemType!,
         rankingScore,
         positionDistance,
         ...vocalTiming,
@@ -908,7 +942,9 @@ function livePhraseSectionAlignmentCandidates(
     }
   }
   matches.sort((left, right) =>
-    right.rankingScore - left.rankingScore || left.positionDistance - right.positionDistance,
+    right.rankingScore - left.rankingScore
+      || (right.roleActivitySimilarity ?? -1) - (left.roleActivitySimilarity ?? -1)
+      || left.positionDistance - right.positionDistance,
   );
   const diverse: LiveStemSectionAlignmentCandidate[] = [];
   for (const match of matches) {
@@ -1053,6 +1089,9 @@ export type LiveStemSectionAlignmentCandidate = {
   vocalTimingRecipientEventCount: number | null;
   vocalTimingDonorEventCount: number | null;
   vocalTimingBasis: "voiced-phrase" | "vocal-activity" | null;
+  /** Same-role beat-level activity-shape similarity; null means it was not measured. */
+  roleActivitySimilarity: number | null;
+  roleActivityType: string | null;
 };
 
 const MAX_LIVE_STEM_ALIGNMENT_CANDIDATES = 5;
@@ -1183,6 +1222,8 @@ export function liveStemSectionAlignmentCandidates(
       vocalTimingRecipientEventCount: null,
       vocalTimingDonorEventCount: null,
       vocalTimingBasis: null,
+      roleActivitySimilarity: null,
+      roleActivityType: null,
     }];
   }).filter(fitsDonorStem);
 }

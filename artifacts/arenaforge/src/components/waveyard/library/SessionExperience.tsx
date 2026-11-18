@@ -5340,6 +5340,7 @@ export default function SessionExperience({
         );
       const candidateEvidence = {
         ...candidateTempoEvidence,
+        stemType,
         donorStemDurationMs,
         recipientBeatGridMs: currentSwapSetup.sectionClock.beatGridMs,
         donorBeatGridMs: donorAnalysis.beatGridMs,

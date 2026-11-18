@@ -5,6 +5,7 @@ import {
   MINIMUM_PERSISTENT_STEM_CHANGE_DB,
   type PassageStemActivity,
   type PassageFingerprint,
+  type PassageRollingStemActivity,
   type PassageRollingWindow,
   type PassageVocalRun,
   unavailablePassageEvidence,
@@ -40,6 +41,8 @@ export type StemActivityProfile = Pick<
   PassageStemActivity,
   "stemType" | "stemAssetId" | "separationJobId" | "stemChecksumSha256"
 > & {
+  /** One measured RMS value per beat interval; absent on legacy in-memory fixtures. */
+  rmsDbByBeat?: (number | null)[];
   rmsDbByBar: (number | null)[];
   spectralShapeByBar: ([number, number, number, number] | null)[];
   sampledSpectralFluxByBar: (number | null)[];
@@ -48,7 +51,7 @@ export type StemActivityProfile = Pick<
 /** Ephemeral per-stem levels used while analysing an in-memory composition. */
 export type StemActivityLevelProfile = Pick<
   StemActivityProfile,
-  "stemType" | "rmsDbByBar" | "spectralShapeByBar" | "sampledSpectralFluxByBar"
+  "stemType" | "rmsDbByBeat" | "rmsDbByBar" | "spectralShapeByBar" | "sampledSpectralFluxByBar"
 >;
 
 export type PassageVocalActivityEvidence = {
@@ -320,9 +323,44 @@ export function buildStemActivityLevelProfile(
   if (!pcm.length || !stemType || beatGridMs.length < 8
     || beatGridMs.some((beat) => !Number.isFinite(beat) || beat < 0)) return null;
   const barCount = Math.floor(beatGridMs.length / 4);
+  const beatCount = Math.max(0, beatGridMs.length - 1);
+  const squaredEnergyByBeat: (number | null)[] = [];
+  const sampleCountByBeat: number[] = [];
+  const rmsDbByBeat: (number | null)[] = [];
   const rmsDbByBar: (number | null)[] = [];
   const spectralShapeByBar: (StemSpectralShape | null)[] = [];
   const sampledSpectralFluxByBar: (number | null)[] = [];
+
+  // Measure each beat once. Bar RMS is pooled from these exact intervals, so
+  // the added local signature does not require a second full PCM scan.
+  for (let beat = 0; beat < beatCount; beat += 1) {
+    const startMs = beatGridMs[beat];
+    const endMs = beatGridMs[beat + 1];
+    if (startMs === undefined || endMs === undefined || endMs <= startMs) {
+      squaredEnergyByBeat.push(null);
+      sampleCountByBeat.push(0);
+      rmsDbByBeat.push(null);
+      continue;
+    }
+    const startSample = Math.max(0, Math.floor((startMs * ANALYSIS_PCM_RATE) / 1000));
+    const requestedEndSample = Math.floor((endMs * ANALYSIS_PCM_RATE) / 1000);
+    const endSample = Math.min(pcm.length, requestedEndSample);
+    if (endSample <= startSample || endSample < requestedEndSample) {
+      squaredEnergyByBeat.push(null);
+      sampleCountByBeat.push(0);
+      rmsDbByBeat.push(null);
+      continue;
+    }
+    let squaredEnergy = 0;
+    for (let sample = startSample; sample < endSample; sample += 1) {
+      const value = pcm[sample] ?? 0;
+      squaredEnergy += value * value;
+    }
+    squaredEnergyByBeat.push(squaredEnergy);
+    sampleCountByBeat.push(endSample - startSample);
+    rmsDbByBeat.push(rmsToDb(squaredEnergy, endSample - startSample));
+  }
+
   for (let bar = 0; bar < barCount; bar += 1) {
     const startMs = beatGridMs[bar * 4];
     const endMs = beatGridMs[(bar + 1) * 4];
@@ -334,23 +372,28 @@ export function buildStemActivityLevelProfile(
     }
     const startSample = Math.max(0, Math.floor((startMs * ANALYSIS_PCM_RATE) / 1000));
     const endSample = Math.min(pcm.length, Math.floor((endMs * ANALYSIS_PCM_RATE) / 1000));
-    if (endSample <= startSample || endSample < Math.floor((endMs * ANALYSIS_PCM_RATE) / 1000)) {
+    const firstBeat = bar * 4;
+    const beatEnergies = squaredEnergyByBeat.slice(firstBeat, firstBeat + 4);
+    const beatSamples = sampleCountByBeat.slice(firstBeat, firstBeat + 4);
+    const completeBeatEnergies = beatEnergies.filter((energy): energy is number => energy !== null);
+    if (endSample <= startSample
+      || endSample < Math.floor((endMs * ANALYSIS_PCM_RATE) / 1000)
+      || beatEnergies.length !== 4
+      || completeBeatEnergies.length !== 4
+      || beatSamples.some((count) => count < 1)) {
       rmsDbByBar.push(null);
       spectralShapeByBar.push(null);
       sampledSpectralFluxByBar.push(null);
       continue;
     }
-    let squaredEnergy = 0;
-    for (let sample = startSample; sample < endSample; sample += 1) {
-      const value = pcm[sample] ?? 0;
-      squaredEnergy += value * value;
-    }
-    rmsDbByBar.push(rmsToDb(squaredEnergy, endSample - startSample));
+    const squaredEnergy = completeBeatEnergies.reduce((total, energy) => total + energy, 0);
+    const sampleCount = beatSamples.reduce((total, count) => total + count, 0);
+    rmsDbByBar.push(rmsToDb(squaredEnergy, sampleCount));
     const texture = measureStemBarTexture(pcm, startSample, endSample);
     spectralShapeByBar.push(texture.spectralShape);
     sampledSpectralFluxByBar.push(texture.sampledSpectralFlux);
   }
-  return { stemType, rmsDbByBar, spectralShapeByBar, sampledSpectralFluxByBar };
+  return { stemType, rmsDbByBeat, rmsDbByBar, spectralShapeByBar, sampledSpectralFluxByBar };
 }
 
 /** Adds immutable source provenance when per-stem analysis is persisted. */
@@ -362,6 +405,7 @@ export function buildStemActivityProfile(
   const levels = buildStemActivityLevelProfile(pcm, beatGridMs, metadata.stemType);
   return levels ? {
     ...metadata,
+    rmsDbByBeat: levels.rmsDbByBeat,
     rmsDbByBar: levels.rmsDbByBar,
     spectralShapeByBar: levels.spectralShapeByBar,
     sampledSpectralFluxByBar: levels.sampledSpectralFluxByBar,
@@ -631,6 +675,7 @@ export function buildRollingPassageWindows(
   frameMs: number,
   pcm: Float32Array,
   confidence: number | null,
+  stemActivityProfiles: readonly StemActivityProfile[] = [],
 ): PassageRollingWindow[] {
   const windowBeats = 8;
   const minimumHopBeats = 4;
@@ -682,6 +727,26 @@ export function buildRollingPassageWindows(
         confidence,
       }
       : unavailablePassageEvidence("Local beat-phase evidence is unavailable for this window.");
+    const stemActivityByRole: PassageRollingStemActivity[] = stemActivityProfiles.flatMap((profile) => {
+      const rmsByBeat = profile.rmsDbByBeat;
+      if (!rmsByBeat || windowStart < 0 || windowEnd > rmsByBeat.length) return [];
+      const levels = rmsByBeat.slice(windowStart, windowEnd);
+      if (levels.length !== windowBeats || levels.some((level) => level === null || !Number.isFinite(level))) return [];
+      const measured = levels as number[];
+      const peakDb = Math.max(...measured);
+      // An effectively silent isolated stem carries no reliable activity shape.
+      if (peakDb <= -90) return [];
+      const relativeRmsByBeat = measured.map((level) =>
+        Math.max(0, Math.min(1, 10 ** ((level - peakDb) / 20))),
+      );
+      return [{
+        stemType: profile.stemType,
+        stemAssetId: profile.stemAssetId,
+        separationJobId: profile.separationJobId,
+        stemChecksumSha256: profile.stemChecksumSha256,
+        relativeRmsByBeat,
+      }];
+    });
     windows.push({
       startBeatIndex: windowStart,
       endBeatIndex: windowEnd,
@@ -692,6 +757,14 @@ export function buildRollingPassageWindows(
         ? { status: "measured", value: chroma, method: "four time-ordered 12-bin chroma windows in an eight-beat window", confidence }
         : unavailablePassageEvidence("Local chroma lacks sufficient tonal variation."),
       beatPhase: phaseEvidence,
+      stemActivityByRole: stemActivityByRole.length
+        ? {
+          status: "measured",
+          value: stemActivityByRole,
+          method: "per-beat isolated-stem RMS normalized to the role's peak within this window",
+          confidence,
+        }
+        : unavailablePassageEvidence("No checksum-current isolated stem had complete, audible per-beat RMS evidence for this window."),
     });
   }
   return windows;
@@ -819,6 +892,7 @@ export function buildPassageFingerprint(input: {
     frameMs,
     pcm,
     input.beatConfidence,
+    input.stemActivityProfiles ?? [],
   );
   const rmsDb = sectionRmsDb(pcm, startBeatIndex, endBeatIndex, beatGridMs);
   const intervals = beatGridMs.slice(startBeatIndex + 1, endBeatIndex)

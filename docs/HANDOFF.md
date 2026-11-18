@@ -3163,6 +3163,28 @@ remain unproven; this is a focused upgrade, not completion of the entire brief.
   including the persisted worker and vocal-analysis lifecycle; the four-stem
   separation integration test passed (1/1). Full workspace typecheck and
   `git diff --check` passed.
+
+## Current increment — same-role activity shapes inform live entry ranking
+
+* **Behavior:** current isolated stem PCM is now measured per beat as well as
+  per bar. Each rolling passage window stores an eight-beat, locally
+  peak-normalized RMS shape for every audible role, with the exact stem asset,
+  separation job, and stem checksum. The live picker passes the requested role
+  into candidate matching. When the existing rhythm/harmony and vocal-timing
+  ranks tie, same-role activity shape resolves the order; the picker displays
+  the measurement as structural activity evidence, not as a sound-quality score.
+* **Fallback and limits:** missing, stale, incomplete, or effectively silent
+  stem evidence is unavailable and does not remove existing candidates. This
+  improves where an in-place replacement can enter (for example, matching a
+  measured drum dropout); it does not yet dynamically rewrite a donor after
+  insertion or prove that the rendered pairing sounds good.
+* **Verification:** targeted tests confirm per-beat PCM captures a sustained
+  stem dropout, the fingerprint parser keeps its provenance and rejects invalid
+  values, the persisted section worker retains the stem identity in its rolling
+  windows, and equal musical windows rank the same-role activity match first
+  without discarding the alternative. The four focused suites passed (113/113),
+  the full workspace typecheck passed, and the Arena preview restarted cleanly.
+  A real-song browser audition was not performed in this increment.
 * **Real audio measurements:** *September* (215.14 s) produced 11 sustained
   per-stem changes, 9 retained as generic section boundaries after the
   nearby-boundary guard; *Another One Bites the Dust* (222.67 s) produced 7

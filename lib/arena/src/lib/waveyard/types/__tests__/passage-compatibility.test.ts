@@ -138,6 +138,38 @@ test("fingerprint parser validates checksum-bound rolling beat windows and rejec
   assert.equal(parsePassageFingerprint(invalid), null, "malformed local vectors are rejected rather than treated as evidence");
 });
 
+test("fingerprint parser validates optional per-role activity and preserves its provenance", () => {
+  const rolling = fingerprint("sha-a", 0, 8, {
+    rollingWindows: measured([{
+      startBeatIndex: 0,
+      endBeatIndex: 8,
+      rhythm: measured(Array.from({ length: 32 }, (_, index) => index % 5 === 0 ? 1 : 0)),
+      chroma: measured(Array.from({ length: 48 }, (_, index) => index % 12 === 0 ? 1 : 0)),
+      beatPhase: measured({ subdivisionProfile: [1, 0, 0, 0], beatPeriodMs: 500 }),
+      stemActivityByRole: measured([{
+        stemType: "drums",
+        stemAssetId: "drums-1",
+        separationJobId: "separation-current",
+        stemChecksumSha256: "c".repeat(64),
+        relativeRmsByBeat: [1, 1, 1, 1, 0.001, 0.001, 0.001, 0.001],
+      }]),
+    }]),
+  });
+  assert.deepEqual(parsePassageFingerprint(rolling), rolling);
+  const invalid = {
+    ...rolling,
+    rollingWindows: measured([{
+      ...rolling.rollingWindows!.value[0]!,
+      stemActivityByRole: measured([{
+        ...rolling.rollingWindows!.value[0]!.stemActivityByRole!.value[0]!,
+        relativeRmsByBeat: [1, 1, 1, 1, 0.001, 0.001, 0.001, 1.2],
+      }]),
+    }]),
+  };
+  assert.equal(parsePassageFingerprint(invalid), null,
+    "invalid per-beat levels cannot influence live matching");
+});
+
 test("per-stem shifts are visible as context but never decide cross-song eligibility", () => {
   const stemActivity = {
     status: "measured" as const,

@@ -1123,6 +1123,12 @@ export default function LiveStemSwapPicker({
                           {candidate.vocalTimingDonorEventCount} donor onsets
                         </span>
                       )}
+                      {candidate.roleActivitySimilarity !== null && candidate.roleActivityType !== null && (
+                        <span title="Compared isolated-stem per-beat RMS shape. This is structural activity evidence, not a perceptual quality score.">
+                          Same-role {candidate.roleActivityType} activity shape{" "}
+                          {formatEvidencePercent(candidate.roleActivitySimilarity)}
+                        </span>
+                      )}
                       <span>
                         Duration fit {formatEvidencePercent(candidate.durationSimilarity)}
                         {" · "}boundary evidence {formatEvidencePercent(candidate.recipientBoundaryConfidence)}

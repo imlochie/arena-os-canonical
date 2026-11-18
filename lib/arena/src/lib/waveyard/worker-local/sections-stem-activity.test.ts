@@ -188,7 +188,7 @@ test("persisted section analysis carries a four-stem breakdown signature into se
       return stem!;
     };
     const vocalStem = await addStem("vocals", "voice-key", "d".repeat(64));
-    await addStem("drums", "drum-key", "e".repeat(64));
+    const drumsStem = await addStem("drums", "drum-key", "e".repeat(64));
     await addStem("other", "other-key", "f".repeat(64));
     const [vocalAnalysis] = await fixture.database.insert(vocalAnalyses).values({
       projectId: fixture.source.projectId,
@@ -244,6 +244,27 @@ test("persisted section analysis carries a four-stem breakdown signature into se
         ["bass", "drums", "other", "vocals"]);
       assert.ok(fingerprint.stemActivity.value.every((entry) =>
         entry.spectralShape?.length === 4 && typeof entry.sampledSpectralFlux === "number"));
+    }
+    const rollingSection = sections.find((section) => section.endBeatIndex - section.startBeatIndex >= 8);
+    assert.ok(rollingSection, "fixture contains an eight-beat persisted section");
+    const rollingFingerprint = rollingSection
+      ? parsePassageFingerprint(rollingSection.passageFingerprint, {
+        sourceChecksumSha256: sourceChecksum,
+        startBeatIndex: rollingSection.startBeatIndex,
+        endBeatIndex: rollingSection.endBeatIndex,
+      })
+      : null;
+    const persistedRoleWindow = rollingFingerprint?.rollingWindows?.status === "measured"
+      ? rollingFingerprint.rollingWindows.value.find((window) => window.stemActivityByRole?.status === "measured")
+      : undefined;
+    assert.ok(persistedRoleWindow,
+      "the persisted section route carries isolated-stem per-beat evidence into local windows");
+    if (persistedRoleWindow?.stemActivityByRole?.status === "measured") {
+      const persistedDrums = persistedRoleWindow.stemActivityByRole.value.find((entry) => entry.stemType === "drums");
+      assert.ok(persistedDrums);
+      assert.equal(persistedDrums.stemAssetId, drumsStem.id);
+      assert.equal(persistedDrums.separationJobId, fixture.stem.separationJobId);
+      assert.equal(persistedDrums.relativeRmsByBeat.length, 8);
     }
   } finally {
     await fixture.client.close();

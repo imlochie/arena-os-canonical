@@ -524,3 +524,50 @@ test("stem activity is persisted as source-linked signal evidence, not a semanti
   }
   assert.doesNotMatch(JSON.stringify(fingerprint), /chorus|verse/i);
 });
+
+test("rolling fingerprints retain isolated-stem beat drops for the same-role live matcher", () => {
+  const beatGrid = Array.from({ length: 17 }, (_, index) => index * 500);
+  const drums = new Float32Array(ANALYSIS_PCM_RATE * 8);
+  for (let beat = 0; beat < 16; beat += 1) {
+    const start = beat * ANALYSIS_PCM_RATE / 2;
+    const end = (beat + 1) * ANALYSIS_PCM_RATE / 2;
+    const amplitude = beat >= 4 && beat < 12 ? 0 : 0.12;
+    for (let sample = start; sample < end; sample += 1)
+      drums[sample] = amplitude * Math.sin((2 * Math.PI * 90 * sample) / ANALYSIS_PCM_RATE);
+  }
+  const profile = buildStemActivityProfile(drums, beatGrid, {
+    stemType: "drums",
+    stemAssetId: "drum-stem",
+    separationJobId: "current-separation",
+    stemChecksumSha256: "e".repeat(64),
+  });
+  assert.ok(profile);
+
+  const fingerprint = buildPassageFingerprint({
+    sourceChecksumSha256: "f".repeat(64),
+    startBeatIndex: 0,
+    endBeatIndex: 16,
+    beatGridMs: beatGrid,
+    beatConfidence: 0.9,
+    envelope: new Float32Array(1_600),
+    frameMs,
+    pcm: drums,
+    stemActivityProfiles: [profile],
+  });
+  assert.equal(fingerprint.rollingWindows?.status, "measured");
+  if (fingerprint.rollingWindows?.status !== "measured") return;
+  const firstWindow = fingerprint.rollingWindows.value.find((window) => window.startBeatIndex === 0);
+  assert.equal(firstWindow?.stemActivityByRole?.status, "measured");
+  if (firstWindow?.stemActivityByRole?.status === "measured") {
+    const drums = firstWindow.stemActivityByRole.value.find((role) => role.stemType === "drums");
+    assert.equal(drums?.stemAssetId, "drum-stem");
+    assert.equal(drums?.separationJobId, "current-separation");
+    assert.equal(drums?.stemChecksumSha256, "e".repeat(64));
+    assert.deepEqual(drums?.relativeRmsByBeat.slice(0, 4), [1, 1, 1, 1]);
+    assert.ok(drums?.relativeRmsByBeat.slice(4).every((level) => level < 0.001),
+      "the four-beat drum break is represented as low activity, not lost in the full-section average");
+  }
+  const silentWindow = fingerprint.rollingWindows.value.find((window) => window.startBeatIndex === 4);
+  assert.equal(silentWindow?.stemActivityByRole?.status, "unavailable",
+    "an effectively silent isolated stem is unavailable, not misrepresented as a measured active pattern");
+});

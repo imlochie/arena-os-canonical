@@ -161,6 +161,22 @@ function testRollingWindow(
   };
 }
 
+function testRollingWindowWithRoleActivity(
+  startBeatIndex: number,
+  relativeRmsByBeat: number[],
+): PassageRollingWindow {
+  return {
+    ...testRollingWindow(startBeatIndex, 0),
+    stemActivityByRole: testEvidence([{
+      stemType: "drums",
+      stemAssetId: `drums-${startBeatIndex}`,
+      separationJobId: `separation-${startBeatIndex}`,
+      stemChecksumSha256: "c".repeat(64),
+      relativeRmsByBeat,
+    }]),
+  };
+}
+
 function testPassageFingerprint(
   sourceChecksumSha256: string,
   windows: PassageRollingWindow[],
@@ -536,6 +552,40 @@ test("live stem entry alternatives expose distinct measured windows and their ev
     "legacy automatic alignment still selects the strongest alternative",
   );
   assert.equal(liveStemSectionAlignmentCandidates([recipient], [donor], 5, 1, evidence, 2).length, 2);
+});
+
+test("same-role stem activity resolves otherwise-equal live swap windows without rejecting the fallback", () => {
+  const recipient = testLongSourceSection("a".repeat(64), [
+    testRollingWindowWithRoleActivity(0, [1, 1, 1, 1, 0, 0, 0, 0]),
+  ]);
+  const donor = testLongSourceSection("b".repeat(64), [
+    testRollingWindowWithRoleActivity(8, [1, 1, 1, 1, 1, 1, 1, 1]),
+    testRollingWindowWithRoleActivity(32, [1, 1, 1, 1, 0, 0, 0, 0]),
+  ]);
+  const evidence = testLiveStemEvidence({
+    recipientBeatGridMs: Array.from({ length: 49 }, (_, index) => index * 500),
+    donorBeatGridMs: Array.from({ length: 49 }, (_, index) => index * 500),
+    stemType: "drums",
+  });
+
+  const candidates = liveStemSectionAlignmentCandidates([recipient], [donor], 1, 1, evidence);
+  assert.equal(candidates.length, 2, "both musically qualifying source windows remain available");
+  assert.equal(candidates[0]?.donorWindowStartMs, 16_000,
+    "when rhythm, harmony, duration and vocal evidence tie, prefer the window whose isolated drum drop matches the host");
+  assert.equal(candidates[0]?.roleActivityType, "drums");
+  assert.equal(candidates[0]?.roleActivitySimilarity, 1);
+  assert.equal(candidates[1]?.roleActivitySimilarity, 0.5);
+
+  const withoutRoleRequest = liveStemSectionAlignmentCandidates(
+    [recipient],
+    [donor],
+    1,
+    1,
+    { ...evidence, stemType: undefined },
+  );
+  assert.equal(withoutRoleRequest.length, 2);
+  assert.ok(withoutRoleRequest.every((candidate) => candidate.roleActivitySimilarity === null),
+    "missing role intent leaves the established candidate ordering evidence untouched");
 });
 
 test("live vocal alternatives rank beat-mapped phrase timing without replacing music evidence", () => {
