@@ -2158,6 +2158,16 @@ try {
         assert.ok(advancingOriginalClocks.every(item => !item.paused && item.to > item.from),
           `the live swap preserves advancing lead audio: ${JSON.stringify(advancingOriginalClocks)}`);
         const layerGains = await page.evaluate(({ leadId, bufferCount }) => ({
+          original: Object.fromEntries([...document.querySelectorAll('[data-role="current"] audio')]
+            .flatMap(element => {
+              const assetId = new URL(element.src).pathname.split("/").at(-1) ?? "";
+              if (!assetId.startsWith(`${leadId}-`)) return [];
+              const stemType = assetId.slice(leadId.length + 1);
+              const source = window.audioProbe.sources.find(entry => entry.mediaElement === element);
+              const inputGain = source?.probeConnections?.find(node => node instanceof GainNode);
+              const stemGain = inputGain?.nextNode instanceof GainNode ? inputGain.nextNode : inputGain;
+              return [[stemType, stemGain?.gain?.value ?? null]];
+            })),
           originalMedia: Object.fromEntries([...document.querySelectorAll('[data-role="current"] audio')].map(element => [
             new URL(element.src).pathname.split("/").at(-1),
             { paused: element.paused, currentTime: element.currentTime, playbackRate: element.playbackRate },
