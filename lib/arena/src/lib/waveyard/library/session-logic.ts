@@ -591,22 +591,22 @@ function compareVocalOnsetTiming(input: {
   const donorOutputTimes = donorOnsets.map((onset) =>
     input.recipientWindowStartMs + (onset.startMs - input.donorWindowStartMs) * input.stretchRatio,
   );
-  const matchedRecipient = new Set<number>();
+  const sortedDonorOutputTimes = [...donorOutputTimes].sort((left, right) => left - right);
+  let recipientIndex = 0;
+  let donorIndex = 0;
   let matchedEvents = 0;
-  for (const donorTime of donorOutputTimes) {
-    let nearestIndex = -1;
-    let nearestDistance = Number.POSITIVE_INFINITY;
-    for (let index = 0; index < recipientTimes.length; index += 1) {
-      if (matchedRecipient.has(index)) continue;
-      const distance = Math.abs(recipientTimes[index]! - donorTime);
-      if (distance < nearestDistance) {
-        nearestDistance = distance;
-        nearestIndex = index;
-      }
-    }
-    if (nearestIndex >= 0 && nearestDistance <= timingToleranceMs) {
-      matchedRecipient.add(nearestIndex);
+  while (recipientIndex < recipientTimes.length && donorIndex < sortedDonorOutputTimes.length) {
+    const recipientTime = recipientTimes[recipientIndex]!;
+    const donorTime = sortedDonorOutputTimes[donorIndex]!;
+    const deltaMs = recipientTime - donorTime;
+    if (Math.abs(deltaMs) <= timingToleranceMs) {
       matchedEvents += 1;
+      recipientIndex += 1;
+      donorIndex += 1;
+    } else if (deltaMs < 0) {
+      recipientIndex += 1;
+    } else {
+      donorIndex += 1;
     }
   }
   return {

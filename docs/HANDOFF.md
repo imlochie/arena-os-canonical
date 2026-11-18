@@ -1,6 +1,34 @@
 # Arena handoff — read this first
 
-## Latest increment: library vocal donors load full comparison evidence on demand
+## Latest increment: live vocal candidates include paired phrase-timing evidence
+
+Live vocal-entry candidates now compare checksum-current vocal phrase starts
+from the recipient and donor inside each candidate's measured rolling window.
+Donor phrase starts are mapped into recipient time using the selected stretch
+ratio and matched one-to-one within one quarter of the shorter local beat. The
+matcher uses ordered one-to-one matching so nearby events cannot consume the
+same recipient phrase or hide a valid second match. If paired phrase evidence
+is unavailable, paired vocal-activity starts can supply the same timing check;
+if neither track has enough evidence, the timing score stays unavailable.
+
+This evidence refines candidate ordering alongside—not instead of—the existing
+rhythm, harmony and duration checks. The current 20% score contribution is an
+initial ranking heuristic, not a demonstrated mix-quality improvement. The
+picker exposes the evidence basis, agreement and matched/event counts so the
+ranking can be inspected rather than presented as semantic understanding.
+
+**Verification:** All 64 session-logic tests passed, including a cross-tempo
+case that requires two distinct close-onset matches, paired activity fallback,
+and honest unavailability when vocal evidence is absent. ArenaForge and
+shared-library typechecks passed. These are synthetic logic checks; they do not
+establish whole-song section accuracy, real-song candidate quality, or audible
+improvement. No real-song swap was auditioned.
+
+**Still open:** Evaluate whether this ranking improves actual live vocal swaps
+on the existing real-song set. Keep phrase alignment separate from verse/chorus
+recognition and do not claim a listenable mashup from candidate scores alone.
+
+## Previous increment: library vocal donors load full comparison evidence on demand
 
 The vocal entry comparison no longer stops at the lightweight library summary.
 When a user compares a library donor, the existing owner-checked track detail

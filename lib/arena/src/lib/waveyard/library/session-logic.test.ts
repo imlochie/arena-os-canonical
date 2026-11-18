@@ -435,32 +435,33 @@ test("live vocal alternatives rank beat-mapped phrase timing without replacing m
     testRollingWindow(16, 0),
     testRollingWindow(24, 0),
   ]);
-  const beatGridMs = Array.from({ length: 49 }, (_, index) => index * 500);
+  const recipientBeatGridMs = Array.from({ length: 49 }, (_, index) => index * 500);
+  const donorBeatGridMs = Array.from({ length: 49 }, (_, index) => index * 600);
   const evidence = testLiveStemEvidence({
-    recipientBeatGridMs: beatGridMs,
-    donorBeatGridMs: beatGridMs,
+    recipientBeatGridMs,
+    donorBeatGridMs,
     recipientVoicedPhraseStartsMs: [
       { startMs: 3_000, confidence: 0.9 },
-      { startMs: 5_000, confidence: 0.9 },
+      { startMs: 3_200, confidence: 0.9 },
     ],
     donorVoicedPhraseStartsMs: [
-      { startMs: 1_000, confidence: 0.9 },
-      { startMs: 3_000, confidence: 0.9 },
-      { startMs: 5_500, confidence: 0.9 },
-      { startMs: 7_500, confidence: 0.9 },
-      { startMs: 9_000, confidence: 0.9 },
-      { startMs: 11_000, confidence: 0.9 },
-      { startMs: 13_500, confidence: 0.9 },
-      { startMs: 15_500, confidence: 0.9 },
+      { startMs: 1_344, confidence: 0.9 },
+      { startMs: 1_452, confidence: 0.9 },
+      { startMs: 6_144, confidence: 0.9 },
+      { startMs: 6_252, confidence: 0.9 },
+      { startMs: 10_000, confidence: 0.9 },
+      { startMs: 10_200, confidence: 0.9 },
+      { startMs: 15_800, confidence: 0.9 },
+      { startMs: 16_000, confidence: 0.9 },
     ],
   });
 
-  const candidates = liveStemSectionAlignmentCandidates([recipient], [donor], 5, 1, evidence);
+  const candidates = liveStemSectionAlignmentCandidates([recipient], [donor], 5, 5 / 6, evidence);
   assert.ok(candidates.length >= 3);
   assert.deepEqual(
     candidates.slice(0, 2).map((candidate) => candidate.donorWindowStartMs),
-    [0, 8_000],
-    "equal rhythm/harmony windows with matching beat-relative vocal starts rank above mismatched starts",
+    [0, 4_800],
+    "cross-tempo windows with matching phrase starts rank above mismatched starts",
   );
   assert.ok(candidates.slice(0, 2).every((candidate) =>
     candidate.vocalTimingSimilarity === 1
@@ -468,7 +469,7 @@ test("live vocal alternatives rank beat-mapped phrase timing without replacing m
     && candidate.vocalTimingMatchedEvents === 2
     && candidate.rhythmSimilarity !== null
     && candidate.harmonySimilarity !== null,
-  ));
+  ), "both close phrase starts must receive distinct recipient matches");
   assert.ok(candidates.some((candidate) =>
     candidate.vocalTimingSimilarity === 0
     && candidate.vocalTimingBasis === "voiced-phrase",
@@ -478,13 +479,42 @@ test("live vocal alternatives rank beat-mapped phrase timing without replacing m
     [recipient],
     [donor],
     5,
-    1,
-    testLiveStemEvidence({ recipientBeatGridMs: beatGridMs, donorBeatGridMs: beatGridMs }),
+    5 / 6,
+    testLiveStemEvidence({ recipientBeatGridMs, donorBeatGridMs }),
   );
   assert.ok(withoutVocalTiming.length > 0);
   assert.ok(withoutVocalTiming.every((candidate) =>
     candidate.vocalTimingSimilarity === null && candidate.vocalTimingBasis === null,
   ), "missing paired vocal evidence stays unavailable and does not fabricate a score");
+
+  const activityFallback = liveStemSectionAlignmentCandidates(
+    [recipient],
+    [donor],
+    5,
+    5 / 6,
+    testLiveStemEvidence({
+      recipientBeatGridMs,
+      donorBeatGridMs,
+      recipientVocalActivityStartsMs: [
+        { startMs: 3_000, confidence: 0.9 },
+        { startMs: 3_200, confidence: 0.9 },
+      ],
+      donorVocalActivityStartsMs: [
+        { startMs: 1_344, confidence: 0.9 },
+        { startMs: 1_452, confidence: 0.9 },
+        { startMs: 6_144, confidence: 0.9 },
+        { startMs: 6_252, confidence: 0.9 },
+        { startMs: 10_000, confidence: 0.9 },
+        { startMs: 10_200, confidence: 0.9 },
+        { startMs: 15_800, confidence: 0.9 },
+        { startMs: 16_000, confidence: 0.9 },
+      ],
+    }),
+  );
+  assert.ok(activityFallback.some((candidate) =>
+    candidate.vocalTimingSimilarity === 1
+      && candidate.vocalTimingBasis === "vocal-activity",
+  ), "paired vocal-activity starts remain useful when voiced phrase starts are unavailable");
 });
 
 test("one weak section elsewhere does not block a confident live phrase match", () => {
