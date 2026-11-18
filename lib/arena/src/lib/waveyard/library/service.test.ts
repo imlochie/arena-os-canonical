@@ -3949,7 +3949,7 @@ test("audio backup restore creates a playable local library track and skips the 
   }
 });
 
-test("a converted local track appears in the library and downloads with its verified ZIP checksum", async (context) => {
+test("a converted local track survives library, backup ZIP, session, Studio, and export handoff", async (context) => {
   const routeOwner = (await import("../local-context")).LOCAL_OWNER_ID;
   const conversionsRoute = await import(new URL(
     "../../../../../../artifacts/api-server/src/imported/library/conversions/route.ts",
@@ -4067,6 +4067,187 @@ test("a converted local track appears in the library and downloads with its veri
   assert.equal(backupEntry.manifest.fileSizeBytes, convertedBytes.length);
   assert.equal(backupEntry.manifest.sha256, convertedChecksum, "the manifest records the converted file's SHA-256");
   assert.deepEqual(backupEntry.bytes, convertedBytes, "the downloaded ZIP contains the exact converted file bytes");
+
+  const { LOCAL_OWNER_ID } = await import("@workspace/db/schema");
+  const passthroughRoute = await import(new URL(
+    "../../../../../../artifacts/api-server/src/imported/stems/passthrough/route.ts",
+    import.meta.url,
+  ).href);
+  const sessionsRoute = await import(new URL(
+    "../../../../../../artifacts/api-server/src/imported/library/sessions/route.ts",
+    import.meta.url,
+  ).href);
+  const sessionRoute = await import(new URL(
+    "../../../../../../artifacts/api-server/src/imported/library/sessions/[id]/route.ts",
+    import.meta.url,
+  ).href);
+  const sessionTracksRoute = await import(new URL(
+    "../../../../../../artifacts/api-server/src/imported/library/sessions/[id]/tracks/route.ts",
+    import.meta.url,
+  ).href);
+  const handoffRoute = await import(new URL(
+    "../../../../../../artifacts/api-server/src/imported/library/sessions/[id]/studio-handoff/route.ts",
+    import.meta.url,
+  ).href);
+  const remixRoute = await import(new URL(
+    "../../../../../../artifacts/api-server/src/imported/remixes/[id]/route.ts",
+    import.meta.url,
+  ).href);
+  const versionsRoute = await import(new URL(
+    "../../../../../../artifacts/api-server/src/imported/remixes/[id]/versions/route.ts",
+    import.meta.url,
+  ).href);
+  const exportMediaRoute = await import(new URL(
+    "../../../../../../artifacts/api-server/src/imported/exports/[id]/media/route.ts",
+    import.meta.url,
+  ).href);
+
+  // Conversion intentionally does not start expensive separation. Model the
+  // explicit full-source fallback after a failed/deferred separation so this
+  // test proves the converted bytes reach Studio without claiming they are stems.
+  await db.db.insert(schema.processingJobs).values({
+    projectId: convertedRow.projectId,
+    sourceAssetId: convertedSource.id,
+    type: "separation",
+    status: "failed",
+    stage: "failed",
+    idempotencyKey: `conversion-studio-handoff-${randomUUID()}`,
+    model: "integration-fixture",
+    requestedDevice: "cpu",
+    resolvedDevice: "cpu",
+    errorMessage: "Separation is deliberately unavailable in this conversion handoff fixture.",
+  });
+  const passthroughResponse = await passthroughRoute.POST(new Request("http://localhost/api/stems/passthrough", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sourceAssetId: convertedSource.id }),
+  }));
+  assert.equal(passthroughResponse.status, 201, await passthroughResponse.clone().text());
+  const { stem: passthroughStem } = await passthroughResponse.json() as {
+    stem: { id: string; stemType: string; engine: string; checksumSha256: string };
+  };
+  assert.equal(passthroughStem.stemType, "source");
+  assert.equal(passthroughStem.engine, "passthrough-unseparated");
+  assert.equal(passthroughStem.checksumSha256, convertedChecksum);
+
+  const createdSessionResponse = await sessionsRoute.POST(new Request("http://localhost/api/library/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "Converted track Studio handoff" }),
+  }));
+  assert.equal(createdSessionResponse.status, 201, await createdSessionResponse.clone().text());
+  const { session: createdSession } = await createdSessionResponse.json() as { session: { id: string } };
+  const sessionParams = { params: Promise.resolve({ id: createdSession.id }) };
+  const addedTrackResponse = await sessionTracksRoute.POST(new Request(
+    `http://localhost/api/library/sessions/${createdSession.id}/tracks`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ trackId: completedJob.convertedTrackId }),
+    },
+  ), sessionParams);
+  assert.equal(addedTrackResponse.status, 201, await addedTrackResponse.clone().text());
+
+  const reopenedSessionResponse = await sessionRoute.GET(
+    new Request(`http://localhost/api/library/sessions/${createdSession.id}`),
+    sessionParams,
+  );
+  assert.equal(reopenedSessionResponse.status, 200);
+  const { session: reopenedSession } = await reopenedSessionResponse.json() as {
+    session: { tracks: Array<{ id: string; track: { id: string } }> };
+  };
+  assert.equal(reopenedSession.tracks.length, 1, "reopening the saved session restores its converted track");
+  assert.equal(reopenedSession.tracks[0].track.id, completedJob.convertedTrackId);
+
+  const handoffResponse = await handoffRoute.POST(new Request(
+    `http://localhost/api/library/sessions/${createdSession.id}/studio-handoff`,
+    { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+  ), sessionParams);
+  assert.equal(handoffResponse.status, 201, await handoffResponse.clone().text());
+  const { handoff } = await handoffResponse.json() as {
+    handoff: { projectId: string; remixSessionId: string; preservedSwapCount: number };
+  };
+  assert.equal(handoff.preservedSwapCount, 0);
+
+  const remixParams = { params: Promise.resolve({ id: handoff.remixSessionId }) };
+  const reopenedRemixResponse = await remixRoute.GET(
+    new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`),
+    remixParams,
+  );
+  assert.equal(reopenedRemixResponse.status, 200);
+  const reopenedRemix = await reopenedRemixResponse.json() as {
+    tracks: Array<{ clips: Array<{ stemAssetId: string }> }>;
+  };
+  assert.ok(reopenedRemix.tracks.some((track) =>
+    track.clips.some((clip) => clip.stemAssetId === passthroughStem.id),
+  ), "Studio reopening retains the converted audio's explicit full-source clip");
+
+  const versionResponse = await versionsRoute.POST(new Request(
+    `http://localhost/api/remixes/${handoff.remixSessionId}/versions`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Converted source export check" }),
+    },
+  ), remixParams);
+  assert.equal(versionResponse.status, 201, await versionResponse.clone().text());
+  const { version } = await versionResponse.json() as { version: { id: string } };
+  const [exportJob] = await db.db.insert(schema.exportJobs).values({
+    projectId: handoff.projectId,
+    remixSessionId: handoff.remixSessionId,
+    remixVersionId: version.id,
+    requestedById: LOCAL_OWNER_ID,
+    idempotencyKey: `converted-studio-export-${randomUUID()}`,
+    format: "wav",
+    sampleRate: 44_100,
+    channels: 2,
+  }).returning();
+  const { handleExportJob } = await import("../worker-local/export");
+  await handleExportJob({
+    exportJobId: exportJob.id,
+    projectId: handoff.projectId,
+    remixSessionId: handoff.remixSessionId,
+    remixVersionId: version.id,
+    format: "wav",
+  });
+  const [completedExport] = await db.db.select().from(schema.exportJobs)
+    .where(eq(schema.exportJobs.id, exportJob.id)).limit(1);
+  assert.equal(completedExport.status, "complete",
+    completedExport.errorMessage ?? "the persisted converted-source Studio composition renders");
+  const exportMediaResponse = await exportMediaRoute.GET(
+    new Request(`http://localhost/api/exports/${exportJob.id}/media?download=1`),
+    { params: Promise.resolve({ id: exportJob.id }) },
+  );
+  assert.equal(exportMediaResponse.status, 200);
+  const exportPath = path.join(root!, "converted-source-studio-export.wav");
+  writeFileSync(exportPath, Buffer.from(await exportMediaResponse.arrayBuffer()));
+  const rendered = await probeAudio(exportPath);
+  assert.equal(rendered.sampleRate, 44_100);
+  assert.equal(rendered.channels, 2);
+  assert.ok(Math.abs(rendered.durationSeconds - 1) <= 0.1,
+    `the Studio export retains the converted source duration (${rendered.durationSeconds}s)`);
+  assert.ok(statSync(exportPath).size > 44, "the downloaded Studio export contains audio frames");
+  const decodedExportPath = path.join(root!, "converted-source-studio-export.pcm");
+  const ffmpeg = await requireTool("ffmpeg");
+  const decodedExport = spawnSync(ffmpeg.path, [
+    "-v", "error",
+    "-nostdin",
+    "-i", exportPath,
+    "-map", "0:a:0",
+    "-c:a", "pcm_s16le",
+    "-f", "s16le",
+    decodedExportPath,
+  ], { encoding: "utf8", timeout: 30_000 });
+  assert.equal(decodedExport.status, 0,
+    `the downloaded Studio WAV decodes to PCM: ${(decodedExport.stdout ?? "") + (decodedExport.stderr ?? "")}`);
+  const renderedPcm = readFileSync(decodedExportPath);
+  assert.equal(renderedPcm.length, rendered.sampleRate * rendered.channels * 2,
+    "the full one-second stereo export contains the expected decoded PCM frames");
+  let peakSample = 0;
+  for (let offset = 0; offset < renderedPcm.length; offset += 2) {
+    peakSample = Math.max(peakSample, Math.abs(renderedPcm.readInt16LE(offset)));
+  }
+  assert.ok(peakSample > 100, "the exported source fallback contains non-silent PCM samples");
 });
 
 // Keep this after the shared-fixture checks, which intentionally count the first

@@ -56,8 +56,9 @@ or reliable mashups for arbitrary songs.
 ## Branch reconciliation snapshot — 2026-11-18
 
 The active product branch remains `agent-a-waveyard-donor-stem-integrity`;
-neither `main` nor another agent's branch was checked out or reset. The current
-branch is pushed through `4fc47204` and matches its GitHub tracking ref.
+neither `main` nor another agent's branch was checked out or reset. Check the
+current Git status before pushing or continuing, since Replit may add local
+configuration commits independently of code changes.
 
 * `origin/v0/stem-mixer-channel-strips`: its focused channel-strip UI commit was
   integrated as `509cd57a`. The branch's later session-analysis/null-confidence
@@ -73,11 +74,15 @@ branch is pushed through `4fc47204` and matches its GitHub tracking ref.
   not a safe code transplant, but its real conversion→ZIP→player→session
   reopen→Studio export acceptance scenario remains a useful standard. The
   current architecture has conversion UI/routes and engine tests, but no
-  equivalent single current-route acceptance run was found during this pass.
-  The exact decoded-sample/frame check for FLAC has now been carried into the
-  current engine test using a generated one-second WAV fixture; the full
-  persisted route-to-export scenario remains an open verification gap, not a
-  claim that conversion is broken.
+  equivalent single current-route acceptance run was found during the first
+  review. The current service integration now chains FLAC conversion, library
+  visibility, exact ZIP bytes/checksum, persisted session reopen, Studio
+  handoff, export-worker render and downloadable WAV. Its one-second generated
+  WAV uses the explicit `passthrough-unseparated` full-source bridge after a
+  fixture failed-separation row; it proves workflow continuity and provenance,
+  not exact waveform parity, real separation or musical quality. The separate
+  real September/Queen acceptance remains the evidence for separated-stem
+  Studio export.
 * `origin/arena/ed2f88f7-arena-os-canonical`: not integrated. Its experimental
   changes lower section-confidence gates and broaden tempo/section heuristics
   without stronger evidence. They would weaken current fail-closed behavior.
