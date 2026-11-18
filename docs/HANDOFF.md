@@ -81,6 +81,50 @@ privacy-preserving passage/entry recommendation, then validate on the same
 full-track references and actual downstream mix—not to declare section
 accuracy from a synthetic test.
 
+## Reference-prompt review and manual vocal-section fallback
+
+The ten supplied engineering prompts contain useful principles, but their
+example code and fixed thresholds are not implementation specifications for
+this repository. Transferable guidance:
+
+* Keep expensive analysis/preparation outside the real-time audio callback.
+  Separate measured stem/source evidence, planning, and playback execution.
+* Evaluate a stem swap in its actual host context: beat phase, vocal phrase
+  timing, harmonic fit, masking/audibility, splice integrity, and the retained
+  stems all matter. A transition between two whole songs is a different
+  problem from replacing one stem while the host continues.
+* Verify the rendered audio at multiple levels: deterministic failures such as
+  clipping/clicks, measured structural fit, then listening evaluation. Numeric
+  thresholds need labeled real examples; generic perceptual models cannot
+  decide whether a mashup feels musically right.
+* Human control belongs in the product, not just in a final QA step.
+
+Do **not** copy the prompts' assumed Demucs/librosa stack, exact-key hard gate,
+absolute vocal-energy threshold, fixed BPM/stretch limits, “next downbeat”
+trigger rule, raw-audio cross-correlation recipe, or hand-picked perceptual
+scores. Those defaults are not validated for Waveyard's current analysis,
+transforms, live timing, or arbitrary-pair adaptation. In particular, exact
+key matching as a rejection gate conflicts with Waveyard's goal of trying
+bounded transformations; a quality model must not replace listening.
+
+The current Studio can inspect detected sections, but it has no persistent
+user-defined vocal section ranges that the placement planner consumes. Live
+swapping already permits a manual donor start and snaps to activity, voiced
+pitch runs, or detected boundaries; that is a timestamp control, not manual
+section authoring. The appropriate fallback is an optional vocal-stem editor:
+let the user mark and label ranges (intro, verse, chorus, pre-chorus, bridge,
+breakdown, outro, or custom), revise them, and feed those ranges into the
+existing passage/fit planner as human evidence. Keep manual annotations
+separate from detected sections and retain the same playback, audition, save,
+reopen, and later clip-edit path. A user-selected “chorus” must not bypass
+timing, harmony, audibility, or target-fit checks. Keep the manual path even
+after automatic form inference improves.
+
+Before implementing persistence, choose whether these manual annotations stay
+on one device or sync with the user's private Waveyard sessions. Their audio
+and transcript data should remain local unless the chosen private-sync design
+explicitly requires otherwise.
+
 ## Previous increment: faster full-length matching and exact drum-analysis lineage
 
 The offline WSOLA search now checks a decimated coarse grid, then refines the

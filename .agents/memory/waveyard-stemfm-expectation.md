@@ -101,6 +101,12 @@ Waveyard should function as a Stem.fm replacement with extra features. Live stem
 
 **How to apply:** Make transcription explicitly user-triggered, disclose when audio will be sent to an external provider, and bind editable timestamps to the source/stem checksum and transcription engine. Prefer the isolated vocal stem. Keep mashup creation available when transcription is unavailable or declined; do not represent coarse ASR segments as word-level forced alignment.
 
+**Manual vocal-form fallback:** Users should be able to mark, label, revise, and reuse vocal sections themselves when automatic form recognition is missing or wrong. Keep this manual path optional even after automatic recognition improves. Use the human-marked ranges as explicit evidence for placement, while still evaluating the target backing and leaving the resulting arrangement editable.
+
+**Why:** The user wants both the system and the listener to understand and control the music. They proposed that listeners mark sections directly from vocal stems when Waveyard cannot reliably find them, and said this should remain available even when automatic matching becomes strong.
+
+**How to apply:** Keep user annotations separate from generated section candidates and bind them to the exact source/stem identity. Let the planner use the selected vocal range in its existing musical-fit and timing decisions, then create an ordinary saved arrangement clip that can be moved or revised later. Do not treat a manual “chorus” label as proof that a target passage is compatible or that the detector recognized a chorus.
+
 **Full mashup workflow:** Analyze complete songs first; find rhythm, downbeats, repeated structures, arrangement changes, and vocal activity/phrase-entry candidates; let the user audition and adjust a donor entry with evidence-based snapping; arrange and transform the layers together; render the complete mashup; then save, reopen, edit, and export the same arrangement.
 
 **Why:** The user’s multi-step prompt makes whole-song, arbitrary-pair mashup production the goal. Analysis, section labels, phrase timing, swaps, arrangement, and exports are successive parts of that workflow—not independent endpoints or prerequisites that can block creation.
