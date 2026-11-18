@@ -6,6 +6,8 @@ import {
   buildAutomaticRemixPlan,
   type AutomaticRemixSource,
 } from "../index";
+import { PASSAGE_FINGERPRINT_ENGINE_VERSION } from "../passage-compatibility";
+import { DESKTOP_SECTION_ENGINE_VERSION } from "../analysis-provenance";
 
 type SourceOverrides = Omit<Partial<AutomaticRemixSource>, "analysis"> & {
   analysis?: Partial<NonNullable<AutomaticRemixSource["analysis"]>> | null;
@@ -47,7 +49,7 @@ function measuredFingerprint(checksum: string, startBeatIndex: number, endBeatIn
   return {
     schemaVersion: 3 as const,
     engine: "waveyard-passage-fingerprint" as const,
-    engineVersion: "2.2.0" as const,
+    engineVersion: PASSAGE_FINGERPRINT_ENGINE_VERSION,
     sourceChecksumSha256: checksum,
     startBeatIndex,
     endBeatIndex,
@@ -223,7 +225,11 @@ describe("deterministic automatic remix arranger", () => {
   it("withholds a hybrid when passage evidence is unavailable", () => {
     const result = buildAutomaticRemixPlan([source({ id: "a" }), source({ id: "b" })], { variant: "hybrid" });
     expect(result).toMatchObject({ ok: false, reason: "hybrid_evidence_unavailable" });
-    if (!result.ok) expect(result.compatibility?.missingEvidence.join(" ").includes("passage fingerprints")).toBe(true);
+    if (!result.ok) {
+      const missing = result.compatibility?.missingEvidence.join(" ") ?? "";
+      expect(missing.includes("passage fingerprints")).toBe(true);
+      expect(missing.includes(`engine ${DESKTOP_SECTION_ENGINE_VERSION}`)).toBe(true);
+    }
   });
 
   it("withholds a hybrid when neither semantic roles nor passage fingerprints support a pairing", () => {

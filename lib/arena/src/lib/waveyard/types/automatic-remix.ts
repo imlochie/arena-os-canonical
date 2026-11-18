@@ -39,6 +39,7 @@ import {
   type DrumPlacement,
 } from "./drum-bed-decision";
 import { DRUM_ANALYSIS_ENGINE, DRUM_ANALYSIS_ENGINE_VERSION, LOCAL_DRUM_ANALYSIS_ENGINE, LOCAL_DRUM_ANALYSIS_ENGINE_VERSION, drumAnalysisProvenanceReason } from "./drum-analysis";
+import { DESKTOP_SECTION_ENGINE_VERSION } from "./analysis-provenance";
 
 export const AUTOMATIC_REMIX_ENGINE = "waveyard-deterministic-arranger";
 export const AUTOMATIC_REMIX_ENGINE_VERSION = "7";
@@ -183,6 +184,8 @@ export type AutomaticRemixDrumBedDecision = {
   outcome: DrumBedDecision["decision"];
   reason: string;
   measurements: DrumBedDecision["measurements"];
+  /** Present when the arrangement could not be built, but a specific pair was measured. */
+  evaluatedSectionPair?: { anchorSectionId: string; donorSectionId: string };
 };
 
 export type AutomaticRemixProvenance = {
@@ -903,7 +906,7 @@ function passageHybridCounterparts(
   const missingEvidence = [...new Set([
     ...ranked.flatMap((pair) => pair.missingEvidence),
     ...(fingerprintCount < anchorSections.length + donorSections.length
-      ? ["current passage fingerprints for every section; rerun section analysis with engine 1.6.0"] : []),
+      ? [`current passage fingerprints for every section; rerun section analysis with engine ${DESKTOP_SECTION_ENGINE_VERSION}`] : []),
     ...(anchorBpm <= 0 || candidateBpm <= 0 ? ["trusted BPM analysis for both sources"] : []),
   ])];
   return {
@@ -928,7 +931,7 @@ function unavailablePassageReport(candidate: AutomaticRemixSource): AutomaticRem
   const missingEvidence = [
     ...(!hasCurrentAnalysis ? [`current checksum-verified source analysis for ${candidate.originalFilename}`] : []),
     ...(!trustedBpm(candidate) ? [`trusted tempo and beat analysis for ${candidate.originalFilename}`] : []),
-    ...(!hasFingerprint ? [`current passage fingerprints for ${candidate.originalFilename}; rerun section analysis with engine 1.6.0`] : []),
+    ...(!hasFingerprint ? [`current passage fingerprints for ${candidate.originalFilename}; rerun section analysis with engine ${DESKTOP_SECTION_ENGINE_VERSION}`] : []),
   ];
   return {
     evaluatedPairs: 0,
@@ -1164,14 +1167,18 @@ export function buildAutomaticRemixPlan(
   const counterpartsBySource = new Map<string, ReadonlyMap<string, AutomaticRemixSection>>();
   const compatibilityBySource = new Map<string, AutomaticRemixCompatibilityReport>();
   /** Drum-bed decisions per donor, kept for provenance so the choice is auditable. */
-  const drumDecisionBySource = new Map<string, DrumBedDecision>();
+  const drumDecisionBySource = new Map<string, {
+    decision: DrumBedDecision;
+    evaluatedSectionPair?: { anchorSectionId: string; donorSectionId: string };
+  }>();
   const drumDecisionSummaries = (): AutomaticRemixDrumBedDecision[] => [...drumDecisionBySource]
-    .map(([donorSourceId, decision]) => ({
+    .map(([donorSourceId, evaluation]) => ({
       donorSourceId,
       donorFilename: usableSources.find((source) => source.id === donorSourceId)?.originalFilename ?? donorSourceId,
-      outcome: decision.decision,
-      reason: decision.reason,
-      measurements: decision.measurements,
+      outcome: evaluation.decision.decision,
+      reason: evaluation.decision.reason,
+      measurements: evaluation.decision.measurements,
+      ...(evaluation.evaluatedSectionPair ? { evaluatedSectionPair: evaluation.evaluatedSectionPair } : {}),
     }));
   for (const stem of anchor.stems) selected.set(stem.stemType, { source: anchor, stem });
 
@@ -1257,6 +1264,33 @@ export function buildAutomaticRemixPlan(
         notices.push(candidate.stem.stemType === "drums"
           ? `${candidate.source.originalFilename} was kept out of the hybrid because no section pair had current isolated-drum evidence supporting a replace or layer decision on both beat grids.`
           : `${candidate.source.originalFilename} was kept out of the hybrid because no section pair passed the measured tempo, phrase-length, rhythm, beat-phase, and retained-vocal checks.`);
+        if (candidate.stem.stemType === "drums") {
+          // Keep the explicit outcome visible even when no section pair could
+          // be placed. Preserve a measured pair verdict when one exists; never
+          // turn a missing pair into a guessed retain/reject.
+          const evaluatedPair = passage?.report.pairs.find((pair) => pair.retainedStemDecision?.role === "drums");
+          if (evaluatedPair?.retainedStemDecision) {
+            drumDecisionBySource.set(candidate.source.id, {
+              decision: {
+                decision: evaluatedPair.retainedStemDecision.decision,
+                reason: evaluatedPair.retainedStemDecision.reason,
+                measurements: evaluatedPair.retainedStemDecision.measurements,
+              },
+              evaluatedSectionPair: {
+                anchorSectionId: evaluatedPair.anchorSectionId,
+                donorSectionId: evaluatedPair.donorSectionId,
+              },
+            });
+          } else {
+            drumDecisionBySource.set(candidate.source.id, {
+              decision: decideDrumBedForCandidate({
+                anchor,
+                donor: candidate.source,
+                counterparts: new Map(),
+              }),
+            });
+          }
+        }
         continue;
       }
       if (candidate.stem.stemType === "vocals") {
@@ -1274,7 +1308,7 @@ export function buildAutomaticRemixPlan(
           donor: candidate.source,
           counterparts,
         });
-        drumDecisionBySource.set(candidate.source.id, drumDecision);
+        drumDecisionBySource.set(candidate.source.id, { decision: drumDecision });
         const pairing = `${candidate.source.originalFilename}'s drums`;
         if (drumDecision.decision === "retain") {
           notices.push(`The bed keeps its own drums: ${drumDecision.reason}`);
@@ -1339,7 +1373,7 @@ export function buildAutomaticRemixPlan(
       const compatibility = combinedCompatibilityReport([...compatibilityBySource.values()]);
       if (compatibility) {
         notices.push(`Passage-level matches: ${compatibility.eligiblePairs}. They are audition candidates; ${compatibility.missingEvidence.length ? `still missing ${compatibility.missingEvidence.join(", ")}.` : "all listed evidence is present."}`);
-        decisions.push("used measured tempo, phrase length, onset rhythm and beat phase, then checked retained vocal harmony or isolated drum behavior where evidence was available; no semantic verse/chorus label was invented");
+        decisions.push("used measured tempo, phrase length, onset rhythm and beat phase, without requiring semantic verse/chorus labels; retained vocal harmony or isolated drum behavior was checked where evidence was available");
         decisions.push("judged every matched section of the proposed arrangement rather than its opening alone");
       }
     }

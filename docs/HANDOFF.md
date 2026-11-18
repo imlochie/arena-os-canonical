@@ -53,47 +53,75 @@ one. This does not prove subjective mix quality, vocal/section selection,
 saved-session reopening, Studio export equivalence, Windows or mobile playback,
 or reliable mashups for arbitrary songs.
 
-## Latest structural evidence: vocal/percussion-led drop candidates
+## Latest structural evidence: sustained stem texture changes
 
-The local section engine now has a conservative `breakdown-candidate` signal
-path. It uses the already-persisted, source-checksum-matched vocal, drum, bass
-and other-stem activity profiles together with timed vocal-activity intervals.
-It requires an eight-bar context, sustained vocal activity, audible drums, and
-an at-least-8 dB reduction in bass or other accompaniment relative to both
-neighboring contexts. The event bounds are refined to bar boundaries; the
-section is presented as a *possible* vocal/percussion-led breakdown, not a
-semantic verdict. This produces a section range that downstream fingerprint
-and passage-matching code can consume. The automatic arrangement scorer keeps
-the event role-neutral until it is validated; it does not assume the candidate
-is a confirmed breakdown. It does not infer verse/chorus or prove that a
-cross-song pairing sounds good.
+The local section engine now measures each current-checksum-matched stem on the
+persisted beat grid using three distinct signals: per-bar RMS, normalized energy
+shares across four broad frequency bands, and sampled positive spectral flux.
+A boundary event is retained only when the new texture persists across two bars
+and differs from the two-bar context before it. Flux is a sampled change
+measure, not a beat count. The four band shares are not instrument recognition
+or note transcription.
+
+These role-neutral events can add a structural boundary and are persisted in
+each passage fingerprint with separated-stem provenance. The compatibility
+report displays their measured type and magnitude as context only: they do not
+gate eligibility or claim that two stems fit. Fingerprints now use engine
+version `2.3.0`, and the local section engine is `1.16.0`; earlier persisted
+section analyses must be rerun to populate the new evidence.
+Nearby events remain in their passage evidence, but a two-bar spacing guard
+prevents a cluster of changes from splitting one musical passage into
+one-bar fragments.
+
+Requested donor drums also keep a structured outcome when no full hybrid can be
+built: the highest-ranked evaluated section pair carries its `retain`, `reject`
+or `unavailable` result and its section IDs into the remix report. If no pair
+was evaluated, the result remains unavailable. This prevents a failed pairing
+from hiding an actual drum comparison or inventing a song-wide decision from
+one measurement.
+
+The earlier conservative `breakdown-candidate` remains separate. It requires
+an eight-bar context, sustained vocal activity, audible drums, and an at-least
+8 dB reduction in bass or other accompaniment relative to both neighboring
+contexts. It is presented as a *possible* vocal/percussion-led breakdown, not
+a semantic verdict. A texture event cannot promote it to a confirmed
+breakdown, verse or chorus.
 
 **Existing real-stem probe:** the generated Queen separation plus the saved
-production beat grid produced one candidate at 139.2–158.8 seconds, supported
-by a 22.1 dB drop in the `other` stem while vocal activity and drums remained.
-The owner's approximate breakdown annotation is 144–162 seconds, so the
-candidate begins about 4.8 seconds early and ends about 3.2 seconds early.
-This is an arrangement-drop signal, not demonstrated section-boundary
-accuracy. September's existing real separation, using the same local analysis
-code to obtain a beat grid and vocal activity, produced no candidate for its
-annotated 140–172 second breakdown. That abstention may be appropriate if its
-stems lack this signature; it also shows the current detector is not a general
-breakdown recognizer. The reason is visible in the separated audio: mean role
-levels for 132–140s → 140–172s → 172–180s are vocals −21.3 → −23.2 → −22.4
-dBFS, drums −26.3 → −26.2 → −26.7 dBFS, bass −47.7 → −45.0 → −45.3 dBFS,
-and other −30.1 → −28.9 → −31.0 dBFS. The annotated interval does not have a
-large accompaniment-energy dropout; if the listener's breakdown label is
-correct, its distinguishing evidence is likely in spectral/timbral or rhythmic
-activity, not whole-stem RMS. Do not lower the RMS threshold to force a match.
+production beat grid produced one `breakdown-candidate` at 139.2–158.8 seconds,
+supported by a 22.1 dB drop in the `other` stem while vocal activity and drums
+remained. The owner's approximate breakdown annotation is 144–162 seconds, so
+the candidate begins about 4.8 seconds early and ends about 3.2 seconds early.
+This is an arrangement-drop signal, not demonstrated section-boundary accuracy.
 
-Synthetic tests cover role gating, weak-drop abstention, timing, persistence
-normalization, a PGlite section-worker run that stores the candidate beside
-all four source-matched stem fingerprints, and planner handling that preserves
-the candidate boundary without treating it as a confirmed role. They do not
-establish general accuracy or listener quality. The section engine version is now `1.15.0`;
-previously persisted sections must be reanalyzed before this signal appears.
-The local generated WAVs remain ignored and are neither regenerated nor
-committed.
+September's existing real stems and saved production beat grid now produce
+sustained role-neutral changes near the owner's annotated 140–172 second
+breakdown: a bass spectral-shape event at 139.10s (distance 0.184), then vocal
+events at 146.72s (0.294) and 150.52s (0.371), an `other` event at 156.24s
+(0.203), another bass event at 161.95s (0.229), and a drum event at 165.76s
+(0.182). An earlier `other` texture change at 133.39s and level rise at 135.29s
+also precede it. This is the signal the previous whole-stem RMS detector could
+not expose. It supports that the annotated interval contains multi-stem
+arrangement changes, but **does not identify the interval as a breakdown, prove
+the exact 140s boundary, or establish verse/chorus accuracy**. There are 27
+role-neutral events across this 215-second track, so reviewers still need to
+judge whether their density and timing are musically useful; these thresholds
+are not corpus-calibrated.
+
+The probe used the exact existing WAVs and saved beat grid in
+`generated-artifacts/waveyard-real-world-acceptance/`; no audio was regenerated
+or modified. For comparison, mean role levels across 132–140s → 140–172s →
+172–180s are vocals −21.3 → −23.2 → −22.4 dBFS, drums −26.3 → −26.2 → −26.7
+dBFS, bass −47.7 → −45.0 → −45.3 dBFS, and other −30.1 → −28.9 → −31.0 dBFS.
+The annotated span still has no large whole-stem accompaniment dropout; the
+additional detected changes are spectral shape, not proof of a semantic role.
+
+Synthetic tests cover unchanged-loudness spectral shifts, persistent sampled
+flux changes, rejection of one-bar fills, parser bounds, and a PGlite worker run
+that stores all four source-matched profiles. Existing breakdown tests still
+guard against semantic overclaiming. These checks and the one real-track probe
+do not establish general section accuracy or listener quality. The local
+generated WAVs remain ignored and are neither regenerated nor committed.
 
 ## Branch reconciliation snapshot — 2026-11-18
 

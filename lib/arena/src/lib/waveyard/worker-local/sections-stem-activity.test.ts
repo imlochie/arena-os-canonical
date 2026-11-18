@@ -221,7 +221,12 @@ test("persisted section analysis carries a four-stem breakdown signature into se
       .orderBy(sourceSections.sectionIndex);
     const breakdownSections = sections.filter((section) => section.label === "breakdown-candidate");
     const candidate = breakdownSections[0];
-    assert.ok(candidate, "the real section worker persists the evidence-backed arrangement event");
+    const sectionJobState = await fixture.database.select().from(sourceSectionAnalyses)
+      .where(eq(sourceSectionAnalyses.id, fixture.sectionAnalysis.id)).limit(1);
+    assert.ok(candidate, `the real section worker persists the evidence-backed arrangement event: ${
+      JSON.stringify({ job: sectionJobState[0] && { status: sectionJobState[0].status, stage: sectionJobState[0].stage, errorMessage: sectionJobState[0].errorMessage },
+        sections: sections.map(({ startBeatIndex, endBeatIndex, label }) => [startBeatIndex, endBeatIndex, label]) })
+    }`);
     assert.equal(breakdownSections[0]!.startBeatIndex, 16);
     assert.equal(breakdownSections.at(-1)!.endBeatIndex, 48);
     assert.ok(breakdownSections.every((section, index) => index === 0
@@ -237,6 +242,8 @@ test("persisted section analysis carries a four-stem breakdown signature into se
     if (fingerprint?.stemActivity.status === "measured") {
       assert.deepEqual(fingerprint.stemActivity.value.map((entry) => entry.stemType).sort(),
         ["bass", "drums", "other", "vocals"]);
+      assert.ok(fingerprint.stemActivity.value.every((entry) =>
+        entry.spectralShape?.length === 4 && typeof entry.sampledSpectralFlux === "number"));
     }
   } finally {
     await fixture.client.close();
@@ -246,7 +253,29 @@ test("persisted section analysis carries a four-stem breakdown signature into se
 test("persisted section job uses only source-matched completed stems and records their boundary evidence", async () => {
   const fixture = await createFixture(true);
   try {
-    await runSectionAnalysis(fixture);
+    const [textureStem] = await fixture.database.insert(stemAssets).values({
+      projectId: fixture.source.projectId,
+      sourceAssetId: fixture.source.id,
+      separationJobId: fixture.stem.separationJobId,
+      stemType: "drums",
+      engine: "test",
+      model: "test-separation",
+      modelVersion: "test",
+      storageKey: "drum-texture-key",
+      checksumSha256: "c".repeat(64),
+      durationSeconds: 32,
+      sampleRate: 44_100,
+      channels: 2,
+      codec: "pcm_s16le",
+      format: "wav",
+      fileSizeBytes: ANALYSIS_PCM_RATE * 32 * 2,
+    }).returning();
+    const texturePcm = new Float32Array(ANALYSIS_PCM_RATE * 32);
+    for (let sample = 0; sample < texturePcm.length; sample += 1) {
+      const frequency = sample < ANALYSIS_PCM_RATE * 8 ? 110 : 4_000;
+      texturePcm[sample] = 0.08 * Math.sin((2 * Math.PI * frequency * sample) / ANALYSIS_PCM_RATE);
+    }
+    await runSectionAnalysis(fixture, fixtureStorage(), { "drum-texture-key": texturePcm });
     const sections = await fixture.database.select().from(sourceSections)
       .where(eq(sourceSections.sourceAssetId, fixture.source.id))
       .orderBy(sourceSections.sectionIndex);
@@ -259,10 +288,18 @@ test("persisted section job uses only source-matched completed stems and records
     });
     assert.equal(fingerprint?.stemActivity.status, "measured");
     if (fingerprint?.stemActivity.status === "measured") {
-      assert.equal(fingerprint.stemActivity.value[0]?.stemAssetId, fixture.stem.id);
-      assert.equal(fingerprint.stemActivity.value[0]?.separationJobId, fixture.stem.separationJobId);
-      assert.ok((fingerprint.stemActivity.value[0]?.boundaryChanges[0]?.deltaDb ?? 0) >= 6);
-      assert.equal(fingerprint.stemActivity.value[0]?.boundaryChanges[0]?.beatIndex, 16);
+      const persistedBass = fingerprint.stemActivity.value.find((entry) => entry.stemAssetId === fixture.stem.id);
+      assert.ok(persistedBass);
+      assert.equal(persistedBass.separationJobId, fixture.stem.separationJobId);
+      assert.ok((persistedBass.boundaryChanges[0]?.deltaDb ?? 0) >= 6);
+      assert.equal(persistedBass.boundaryChanges[0]?.beatIndex, 16);
+      assert.equal(persistedBass.boundaryChanges[0]?.kind, "level");
+      const persistedDrums = fingerprint.stemActivity.value.find((entry) => entry.stemAssetId === textureStem!.id);
+      assert.ok(persistedDrums);
+      assert.ok(persistedDrums.spectralShape?.length === 4);
+      assert.ok(persistedDrums.boundaryChanges.some((change) =>
+        change.beatIndex === 16 && change.kind === "spectrum"
+        && (change.spectralDistance ?? 0) >= 0.18));
     }
   } finally {
     await fixture.client.close();

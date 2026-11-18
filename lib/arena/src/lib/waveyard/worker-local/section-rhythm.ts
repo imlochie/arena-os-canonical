@@ -9,7 +9,7 @@ import {
   type PassageVocalRun,
   unavailablePassageEvidence,
 } from "../types/passage-compatibility";
-import { ANALYSIS_PCM_RATE, chromaFromPcm } from "./analysis-engine";
+import { ANALYSIS_PCM_RATE, chromaFromPcm, fftInPlace } from "./analysis-engine";
 
 const SUBDIVISIONS_PER_BEAT = 4;
 const MINIMUM_PHRASE_BEATS = 8;
@@ -20,16 +20,36 @@ const MINIMUM_CHROMA_VARIATION = 1e-5;
 const MINIMUM_SECTION_ENERGY_CHANGE_DB = 3;
 const PERSISTENT_STEM_BAR_CHANGE_DB = 3;
 const MAXIMUM_STABLE_WINDOW_VARIATION_DB = 3;
+const STEM_TEXTURE_FFT_SIZE = 512;
+const STEM_TEXTURE_WINDOWS_PER_BAR = 24;
+const STEM_TEXTURE_WINDOW = Float64Array.from({ length: STEM_TEXTURE_FFT_SIZE }, (_, index) =>
+  0.5 - 0.5 * Math.cos((2 * Math.PI * index) / (STEM_TEXTURE_FFT_SIZE - 1)),
+);
+const STEM_TEXTURE_BANDS = [
+  { minHz: 0, maxHz: 250 },
+  { minHz: 250, maxHz: 1_000 },
+  { minHz: 1_000, maxHz: 4_000 },
+  { minHz: 4_000, maxHz: 10_000 },
+] as const;
+const MINIMUM_STABLE_SPECTRAL_DISTANCE = 0.12;
+const MINIMUM_PERSISTENT_SPECTRAL_DISTANCE = 0.18;
+const MINIMUM_SPECTRAL_FLUX_DELTA = 0.025;
+const MINIMUM_SPECTRAL_FLUX_RATIO = 1.8;
 
 export type StemActivityProfile = Pick<
   PassageStemActivity,
   "stemType" | "stemAssetId" | "separationJobId" | "stemChecksumSha256"
 > & {
   rmsDbByBar: (number | null)[];
+  spectralShapeByBar: ([number, number, number, number] | null)[];
+  sampledSpectralFluxByBar: (number | null)[];
 };
 
 /** Ephemeral per-stem levels used while analysing an in-memory composition. */
-export type StemActivityLevelProfile = Pick<StemActivityProfile, "stemType" | "rmsDbByBar">;
+export type StemActivityLevelProfile = Pick<
+  StemActivityProfile,
+  "stemType" | "rmsDbByBar" | "spectralShapeByBar" | "sampledSpectralFluxByBar"
+>;
 
 export type PassageVocalActivityEvidence = {
   analysisId: string;
@@ -42,7 +62,10 @@ export type PassageVocalActivityEvidence = {
 export type StemActivityBoundaryChange = {
   beatIndex: number;
   stemType: string;
-  deltaDb: number;
+  kind: "level" | "spectrum" | "spectral-flux";
+  deltaDb?: number;
+  spectralDistance?: number;
+  spectralFluxRatio?: number;
   evidenceStrength: number;
 };
 
@@ -161,19 +184,19 @@ export function desktopSectionCandidates(
   const stemChangesByBeat = new Map<number, StemActivityBoundaryChange>();
   for (const change of stemActivityBoundaryChanges) {
     const existing = stemChangesByBeat.get(change.beatIndex);
-    if (!existing || Math.abs(change.deltaDb) > Math.abs(existing.deltaDb))
+    if (!existing || change.evidenceStrength > existing.evidenceStrength)
       stemChangesByBeat.set(change.beatIndex, change);
   }
   const vocalChangesByBeat = new Map(
     detectVocalActivityBoundaryChanges(vocalActivityIntervals ?? [], beatGridMs)
       .map((change) => [change.beatIndex, change] as const),
   );
-  const onsetBoundaries = [...boundaries];
   for (const beatIndex of [...stemChangesByBeat.keys(), ...vocalChangesByBeat.keys()]) {
     const bar = beatIndex / barLength;
     if (!Number.isInteger(bar) || bar <= 1 || bar >= barCount - 1 || boundaries.includes(beatIndex)) continue;
-    // Avoid creating one-bar fragments beside already-supported boundaries.
-    if (onsetBoundaries.some((boundary) => Math.abs(boundary - beatIndex) < 2 * barLength)) continue;
+    // Keep close stem/vocal observations as fingerprint evidence, but do not
+    // turn every nearby change into another persisted section boundary.
+    if (boundaries.some((boundary) => Math.abs(boundary - beatIndex) < 2 * barLength)) continue;
     boundaries.push(beatIndex);
   }
   boundaries.push(barCount * barLength);
@@ -230,6 +253,64 @@ function rmsToDb(squaredEnergy: number, sampleCount: number): number | null {
   return Number.isFinite(rms) ? Math.max(-120, 20 * Math.log10(Math.max(rms, 1e-6))) : null;
 }
 
+type StemSpectralShape = [number, number, number, number];
+
+function measureStemBarTexture(
+  pcm: Float32Array,
+  startSample: number,
+  endSample: number,
+): { spectralShape: StemSpectralShape | null; sampledSpectralFlux: number | null } {
+  const availableSamples = endSample - startSample;
+  if (availableSamples < STEM_TEXTURE_FFT_SIZE) return { spectralShape: null, sampledSpectralFlux: null };
+  const real = new Float64Array(STEM_TEXTURE_FFT_SIZE);
+  const imaginary = new Float64Array(STEM_TEXTURE_FFT_SIZE);
+  const previousMagnitudes = new Float64Array(STEM_TEXTURE_FFT_SIZE / 2);
+  const bandEnergy = [0, 0, 0, 0];
+  let totalEnergy = 0;
+  let fluxTotal = 0;
+  let fluxFrames = 0;
+  const binWidthHz = ANALYSIS_PCM_RATE / STEM_TEXTURE_FFT_SIZE;
+
+  for (let frame = 0; frame < STEM_TEXTURE_WINDOWS_PER_BAR; frame += 1) {
+    const offset = startSample + Math.floor(
+      ((availableSamples - STEM_TEXTURE_FFT_SIZE) * (frame + 0.5)) / STEM_TEXTURE_WINDOWS_PER_BAR,
+    );
+    for (let index = 0; index < STEM_TEXTURE_FFT_SIZE; index += 1) {
+      real[index] = (pcm[offset + index] ?? 0) * STEM_TEXTURE_WINDOW[index]!;
+      imaginary[index] = 0;
+    }
+    fftInPlace(real, imaginary);
+    let frameMagnitudeTotal = 0;
+    let frameFlux = 0;
+    const frameBandEnergy = [0, 0, 0, 0];
+    for (let bin = 1; bin < STEM_TEXTURE_FFT_SIZE / 2; bin += 1) {
+      const magnitude = Math.hypot(real[bin]!, imaginary[bin]!);
+      const energy = magnitude * magnitude;
+      const hz = bin * binWidthHz;
+      const bandIndex = STEM_TEXTURE_BANDS.findIndex((band) => hz >= band.minHz && hz < band.maxHz);
+      if (bandIndex >= 0) frameBandEnergy[bandIndex]! += energy;
+      frameMagnitudeTotal += magnitude;
+      if (frame > 0) frameFlux += Math.max(0, magnitude - previousMagnitudes[bin]!);
+      previousMagnitudes[bin] = magnitude;
+    }
+    if (frameBandEnergy.reduce((sum, value) => sum + value, 0) > 1e-12) {
+      for (let band = 0; band < bandEnergy.length; band += 1) bandEnergy[band]! += frameBandEnergy[band]!;
+      totalEnergy += frameBandEnergy.reduce((sum, value) => sum + value, 0);
+    }
+    if (frame > 0 && frameMagnitudeTotal > 1e-8) {
+      fluxTotal += Math.min(1, frameFlux / frameMagnitudeTotal);
+      fluxFrames += 1;
+    }
+  }
+  const spectralShape = totalEnergy > 1e-12
+    ? bandEnergy.map((value) => value / totalEnergy) as StemSpectralShape
+    : null;
+  return {
+    spectralShape,
+    sampledSpectralFlux: fluxFrames > 0 ? fluxTotal / fluxFrames : null,
+  };
+}
+
 /** Measures each full bar from one decoded stem on the supplied beat clock. */
 export function buildStemActivityLevelProfile(
   pcm: Float32Array,
@@ -240,17 +321,23 @@ export function buildStemActivityLevelProfile(
     || beatGridMs.some((beat) => !Number.isFinite(beat) || beat < 0)) return null;
   const barCount = Math.floor(beatGridMs.length / 4);
   const rmsDbByBar: (number | null)[] = [];
+  const spectralShapeByBar: (StemSpectralShape | null)[] = [];
+  const sampledSpectralFluxByBar: (number | null)[] = [];
   for (let bar = 0; bar < barCount; bar += 1) {
     const startMs = beatGridMs[bar * 4];
     const endMs = beatGridMs[(bar + 1) * 4];
     if (startMs === undefined || endMs === undefined || endMs <= startMs) {
       rmsDbByBar.push(null);
+      spectralShapeByBar.push(null);
+      sampledSpectralFluxByBar.push(null);
       continue;
     }
     const startSample = Math.max(0, Math.floor((startMs * ANALYSIS_PCM_RATE) / 1000));
     const endSample = Math.min(pcm.length, Math.floor((endMs * ANALYSIS_PCM_RATE) / 1000));
     if (endSample <= startSample || endSample < Math.floor((endMs * ANALYSIS_PCM_RATE) / 1000)) {
       rmsDbByBar.push(null);
+      spectralShapeByBar.push(null);
+      sampledSpectralFluxByBar.push(null);
       continue;
     }
     let squaredEnergy = 0;
@@ -259,8 +346,11 @@ export function buildStemActivityLevelProfile(
       squaredEnergy += value * value;
     }
     rmsDbByBar.push(rmsToDb(squaredEnergy, endSample - startSample));
+    const texture = measureStemBarTexture(pcm, startSample, endSample);
+    spectralShapeByBar.push(texture.spectralShape);
+    sampledSpectralFluxByBar.push(texture.sampledSpectralFlux);
   }
-  return { stemType, rmsDbByBar };
+  return { stemType, rmsDbByBar, spectralShapeByBar, sampledSpectralFluxByBar };
 }
 
 /** Adds immutable source provenance when per-stem analysis is persisted. */
@@ -270,7 +360,12 @@ export function buildStemActivityProfile(
   metadata: Pick<StemActivityProfile, "stemType" | "stemAssetId" | "separationJobId" | "stemChecksumSha256">,
 ): StemActivityProfile | null {
   const levels = buildStemActivityLevelProfile(pcm, beatGridMs, metadata.stemType);
-  return levels ? { ...metadata, rmsDbByBar: levels.rmsDbByBar } : null;
+  return levels ? {
+    ...metadata,
+    rmsDbByBar: levels.rmsDbByBar,
+    spectralShapeByBar: levels.spectralShapeByBar,
+    sampledSpectralFluxByBar: levels.sampledSpectralFluxByBar,
+  } : null;
 }
 
 function meanRmsDb(values: readonly (number | null)[]): number | null {
@@ -281,10 +376,9 @@ function meanRmsDb(values: readonly (number | null)[]): number | null {
 }
 
 /**
- * Finds only sustained bar-aligned stem changes: the two bars after a boundary
- * must both remain at least 3 dB away from the two-bar pre-boundary level, and
- * their combined shift must reach 6 dB. This is arrangement evidence, never a
- * verse/chorus label or proof of cross-song compatibility.
+ * Finds sustained bar-aligned changes in level, four-band spectral shape, or
+ * sampled spectral flux. Each event must persist across two bars; these are
+ * role-neutral arrangement signals, never semantic form or compatibility proof.
  */
 export function detectStemActivityBoundaryChanges(
   profiles: readonly StemActivityLevelProfile[],
@@ -313,13 +407,64 @@ export function detectStemActivityBoundaryChanges(
       const change = {
         beatIndex,
         stemType: profile.stemType,
+        kind: "level" as const,
         deltaDb: Number(netChangeDb.toFixed(2)),
         evidenceStrength: Number(Math.min(1, Math.abs(netChangeDb) / 18).toFixed(3)),
       };
       changes.push(change);
     }
+    for (let bar = 2; bar + 1 < profile.spectralShapeByBar.length; bar += 1) {
+      const firstBefore = profile.spectralShapeByBar[bar - 2];
+      const lastBefore = profile.spectralShapeByBar[bar - 1];
+      const firstAfter = profile.spectralShapeByBar[bar];
+      const secondAfter = profile.spectralShapeByBar[bar + 1];
+      if (!firstBefore || !lastBefore || !firstAfter || !secondAfter) continue;
+      const distance = (left: StemSpectralShape, right: StemSpectralShape) =>
+        left.reduce((sum, value, index) => sum + Math.abs(value - right[index]!), 0) / 2;
+      const meanShape = (left: StemSpectralShape, right: StemSpectralShape): StemSpectralShape =>
+        left.map((value, index) => (value + right[index]!) / 2) as StemSpectralShape;
+      const beforeShape = meanShape(firstBefore, lastBefore);
+      const afterShape = meanShape(firstAfter, secondAfter);
+      const spectralDistance = distance(beforeShape, afterShape);
+      if (distance(firstBefore, lastBefore) <= MINIMUM_STABLE_SPECTRAL_DISTANCE
+        && distance(firstAfter, secondAfter) <= MINIMUM_STABLE_SPECTRAL_DISTANCE
+        && spectralDistance >= MINIMUM_PERSISTENT_SPECTRAL_DISTANCE
+        && distance(beforeShape, firstAfter) >= MINIMUM_PERSISTENT_SPECTRAL_DISTANCE * 0.75
+        && distance(beforeShape, secondAfter) >= MINIMUM_PERSISTENT_SPECTRAL_DISTANCE * 0.75) {
+        changes.push({
+          beatIndex: bar * 4,
+          stemType: profile.stemType,
+          kind: "spectrum",
+          spectralDistance: Number(spectralDistance.toFixed(3)),
+          evidenceStrength: Number(Math.min(1, spectralDistance / 0.45).toFixed(3)),
+        });
+      }
+    }
+    for (let bar = 2; bar + 1 < profile.sampledSpectralFluxByBar.length; bar += 1) {
+      const beforeValues = profile.sampledSpectralFluxByBar.slice(bar - 2, bar);
+      const afterValues = profile.sampledSpectralFluxByBar.slice(bar, bar + 2);
+      if (beforeValues.some((value) => value === null) || afterValues.some((value) => value === null)) continue;
+      const before = (beforeValues[0]! + beforeValues[1]!) / 2;
+      const after = (afterValues[0]! + afterValues[1]!) / 2;
+      const absoluteDelta = Math.abs(after - before);
+      const ratio = Math.max(after, before) / Math.max(0.005, Math.min(after, before));
+      if (absoluteDelta < MINIMUM_SPECTRAL_FLUX_DELTA || ratio < MINIMUM_SPECTRAL_FLUX_RATIO) continue;
+      const eachAfterChanged = afterValues.every((value) =>
+        Math.abs(value! - before) >= MINIMUM_SPECTRAL_FLUX_DELTA * 0.7
+        && (after >= before ? value! > before : value! < before));
+      if (!eachAfterChanged) continue;
+      changes.push({
+        beatIndex: bar * 4,
+        stemType: profile.stemType,
+        kind: "spectral-flux",
+        spectralFluxRatio: Number(ratio.toFixed(3)),
+        evidenceStrength: Number(Math.min(1, absoluteDelta / 0.12).toFixed(3)),
+      });
+    }
   }
-  return changes.sort((left, right) => left.beatIndex - right.beatIndex || left.stemType.localeCompare(right.stemType));
+  return changes.sort((left, right) => left.beatIndex - right.beatIndex
+    || left.stemType.localeCompare(right.stemType)
+    || left.kind.localeCompare(right.kind));
 }
 
 /** Keeps the measured stem context alongside a persisted source passage. */
@@ -333,24 +478,41 @@ export function passageStemActivityEvidence(
   const afterLastBar = Math.floor(endBeatIndex / 4);
   const measurements: PassageStemActivity[] = profiles.flatMap((profile) => {
     const sectionRmsDb = meanRmsDb(profile.rmsDbByBar.slice(firstBar, afterLastBar));
+    const shapes = profile.spectralShapeByBar.slice(firstBar, afterLastBar)
+      .filter((shape): shape is StemSpectralShape => shape !== null);
+    const spectralShape = shapes.length
+      ? shapes.reduce((sum, shape) => sum.map((value, index) => value + shape[index]!) as StemSpectralShape,
+        [0, 0, 0, 0] as StemSpectralShape).map((value) => value / shapes.length) as StemSpectralShape
+      : undefined;
+    const fluxValues = profile.sampledSpectralFluxByBar.slice(firstBar, afterLastBar)
+      .filter((value): value is number => value !== null && Number.isFinite(value));
+    const sampledSpectralFlux = fluxValues.length
+      ? fluxValues.reduce((sum, value) => sum + value, 0) / fluxValues.length
+      : undefined;
     return sectionRmsDb === null ? [] : [{
       stemType: profile.stemType,
       stemAssetId: profile.stemAssetId,
       separationJobId: profile.separationJobId,
       stemChecksumSha256: profile.stemChecksumSha256,
       sectionRmsDb: Number(sectionRmsDb.toFixed(2)),
+      ...(spectralShape ? { spectralShape: spectralShape.map((value) => Number(value.toFixed(4))) as StemSpectralShape } : {}),
+      ...(sampledSpectralFlux === undefined ? {} : { sampledSpectralFlux: Number(sampledSpectralFlux.toFixed(6)) }),
       boundaryChanges: boundaryChanges
         .filter((change) => change.stemType === profile.stemType
           && change.beatIndex >= startBeatIndex && change.beatIndex < endBeatIndex)
         .slice(0, 32)
-        .map(({ beatIndex, deltaDb }) => ({ beatIndex, deltaDb })),
+        .map(({ beatIndex, kind, deltaDb, spectralDistance, spectralFluxRatio }) => ({
+          beatIndex, kind, ...(deltaDb === undefined ? {} : { deltaDb }),
+          ...(spectralDistance === undefined ? {} : { spectralDistance }),
+          ...(spectralFluxRatio === undefined ? {} : { spectralFluxRatio }),
+        })),
     }];
   });
   return measurements.length
     ? {
       status: "measured",
       value: measurements,
-      method: "isolated-stem PCM RMS by source beat-grid bar; boundary change compares sustained two-bar windows",
+      method: "Source-matched stem PCM RMS, four-band spectral shape and sampled flux with sustained two-bar boundary changes",
       confidence: null,
     }
     : unavailablePassageEvidence("No complete, source-checksum-matched separated-stem PCM was available for this passage.");

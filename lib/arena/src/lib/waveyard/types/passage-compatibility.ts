@@ -6,11 +6,12 @@ import type { DrumBedDecision } from "./drum-bed-decision";
 
 export const PASSAGE_FINGERPRINT_ENGINE = "waveyard-passage-fingerprint";
 export { measureStemGroove, compareStemGrooves, proposeGrooveEntryShift } from "./stem-groove";
-export const PASSAGE_FINGERPRINT_ENGINE_VERSION = "2.2.0";
+export const PASSAGE_FINGERPRINT_ENGINE_VERSION = "2.3.0";
 export const PASSAGE_MATCH_SIMILARITY_THRESHOLD = 0.92;
 export const MINIMUM_PERSISTENT_STEM_CHANGE_DB = 6;
 
 export type PassageVocalRun = { startMs: number; endMs: number; confidence: number };
+export type StemBoundaryEvidenceKind = "level" | "spectrum" | "spectral-flux";
 
 export type PassageStemActivity = {
   stemType: string;
@@ -18,7 +19,17 @@ export type PassageStemActivity = {
   separationJobId: string;
   stemChecksumSha256: string;
   sectionRmsDb: number;
-  boundaryChanges: { beatIndex: number; deltaDb: number }[];
+  /** Mean energy share in <250 Hz, 250–1000 Hz, 1–4 kHz, and 4–10 kHz bands. */
+  spectralShape?: [number, number, number, number];
+  /** Mean sampled positive spectral flux; not an onset count or beat detector. */
+  sampledSpectralFlux?: number | null;
+  boundaryChanges: {
+    beatIndex: number;
+    kind: StemBoundaryEvidenceKind;
+    deltaDb?: number;
+    spectralDistance?: number;
+    spectralFluxRatio?: number;
+  }[];
 };
 
 /** Local measured signatures used to compare phrase-sized windows inside longer passages. */
@@ -248,11 +259,42 @@ export function parsePassageFingerprint(
         const change = rawChange as Record<string, unknown>;
         if (!Number.isInteger(change.beatIndex)
           || (change.beatIndex as number) < (value.startBeatIndex as number)
-          || (change.beatIndex as number) >= (value.endBeatIndex as number)
-          || typeof change.deltaDb !== "number" || !Number.isFinite(change.deltaDb)
-          || change.deltaDb < -120 || change.deltaDb > 120) return null;
-        boundaryChanges.push({ beatIndex: change.beatIndex as number, deltaDb: change.deltaDb });
+          || (change.beatIndex as number) >= (value.endBeatIndex as number)) return null;
+        const kind = change.kind;
+        const hasLevel = typeof change.deltaDb === "number" && Number.isFinite(change.deltaDb)
+          && change.deltaDb >= -120 && change.deltaDb <= 120;
+        const hasSpectrum = typeof change.spectralDistance === "number"
+          && Number.isFinite(change.spectralDistance) && change.spectralDistance >= 0 && change.spectralDistance <= 1;
+        const hasFlux = typeof change.spectralFluxRatio === "number"
+          && Number.isFinite(change.spectralFluxRatio) && change.spectralFluxRatio >= 0 && change.spectralFluxRatio <= 200;
+        if ((kind !== "level" && kind !== "spectrum" && kind !== "spectral-flux")
+          || (kind === "level" && !hasLevel)
+          || (kind === "spectrum" && !hasSpectrum)
+          || (kind === "spectral-flux" && !hasFlux)) return null;
+        boundaryChanges.push({
+          beatIndex: change.beatIndex as number,
+          kind,
+          ...(hasLevel ? { deltaDb: change.deltaDb as number } : {}),
+          ...(hasSpectrum ? { spectralDistance: change.spectralDistance as number } : {}),
+          ...(hasFlux ? { spectralFluxRatio: change.spectralFluxRatio as number } : {}),
+        });
       }
+      const spectralShape = item.spectralShape === undefined
+        ? undefined
+        : Array.isArray(item.spectralShape) && item.spectralShape.length === 4
+          && item.spectralShape.every((entry) => typeof entry === "number" && Number.isFinite(entry) && entry >= 0 && entry <= 1)
+          && Math.abs(item.spectralShape.reduce((sum, entry) => sum + (entry as number), 0) - 1) <= 0.03
+          ? item.spectralShape as PassageStemActivity["spectralShape"]
+          : null;
+      const sampledSpectralFlux = item.sampledSpectralFlux === undefined
+        ? undefined
+        : item.sampledSpectralFlux === null
+          ? null
+          : typeof item.sampledSpectralFlux === "number" && Number.isFinite(item.sampledSpectralFlux)
+            && item.sampledSpectralFlux >= 0 && item.sampledSpectralFlux <= 1
+            ? item.sampledSpectralFlux
+            : Number.NaN;
+      if (spectralShape === null || (typeof sampledSpectralFlux === "number" && !Number.isFinite(sampledSpectralFlux))) return null;
       if (typeof item.stemType !== "string" || item.stemType.length < 1 || item.stemType.length > 128
         || typeof item.stemAssetId !== "string" || item.stemAssetId.length < 1 || item.stemAssetId.length > 128
         || typeof item.separationJobId !== "string" || item.separationJobId.length < 1 || item.separationJobId.length > 128
@@ -264,6 +306,8 @@ export function parsePassageFingerprint(
         separationJobId: item.separationJobId,
         stemChecksumSha256: item.stemChecksumSha256,
         sectionRmsDb: item.sectionRmsDb,
+        ...(spectralShape ? { spectralShape } : {}),
+        ...(sampledSpectralFlux !== undefined ? { sampledSpectralFlux } : {}),
         boundaryChanges,
       });
     }
@@ -523,10 +567,14 @@ export function comparePassageCompatibility(input: {
     if (fingerprint.stemActivity.status !== "measured") return null;
     const changes = fingerprint.stemActivity.value
       .flatMap((stem) => stem.boundaryChanges.map((change) =>
-        `${stem.stemType} at beat ${change.beatIndex} ${change.deltaDb > 0 ? "+" : ""}${change.deltaDb.toFixed(1)} dB`));
+        change.kind === "spectrum"
+          ? `${stem.stemType} at beat ${change.beatIndex} spectral-shape distance ${change.spectralDistance?.toFixed(2)}`
+          : change.kind === "spectral-flux"
+            ? `${stem.stemType} at beat ${change.beatIndex} sampled spectral-flux ratio ${change.spectralFluxRatio?.toFixed(2)}×`
+            : `${stem.stemType} at beat ${change.beatIndex} ${(change.deltaDb ?? 0) > 0 ? "+" : ""}${(change.deltaDb ?? 0).toFixed(1)} dB`));
     return changes.length
       ? `${side}: ${changes.join(", ")}`
-      : `${side}: ${fingerprint.stemActivity.value.length} isolated stem(s) measured; none had a sustained ≥${MINIMUM_PERSISTENT_STEM_CHANGE_DB} dB shift at this boundary`;
+      : `${side}: ${fingerprint.stemActivity.value.length} isolated stem(s) measured; none had a sustained level, spectral-shape, or sampled-flux transition at this boundary`;
   };
   const stemActivityEvidence = [
     describeStemActivity(input.anchor, "Anchor"),

@@ -16,6 +16,7 @@ import test from "node:test";
 
 import { buildAutomaticRemixPlan, type AutomaticRemixSource } from "../index";
 import { DRUM_ANALYSIS_ENGINE, DRUM_ANALYSIS_ENGINE_VERSION } from "../drum-analysis";
+import { PASSAGE_FINGERPRINT_ENGINE_VERSION } from "../passage-compatibility";
 
 const GRID = Array.from({ length: 33 }, (_, index) => index * 500);
 const BEAT = 500;
@@ -92,7 +93,7 @@ function withFingerprints(input: AutomaticRemixSource): AutomaticRemixSource {
       passageFingerprint: {
         schemaVersion: 3 as const,
         engine: "waveyard-passage-fingerprint" as const,
-        engineVersion: "2.2.0" as const,
+        engineVersion: PASSAGE_FINGERPRINT_ENGINE_VERSION,
         sourceChecksumSha256: input.checksumSha256,
         startBeatIndex: section.startMs / 500,
         endBeatIndex: section.endMs / 500,
@@ -183,6 +184,8 @@ test("a donor that neither doubles the bed tightly nor fills gaps leaves the bed
   const decision = drumDecisionOf(planFor(anchor, donor, "donor-drums"));
   assert.equal(decision.outcome, "retain",
     `a loose duplicate is neither a substitute nor an addition: ${decision.reason}`);
+  assert.ok(decision.evaluatedSectionPair,
+    "the report identifies which compared section pair produced this donor-level summary");
   assert.ok(decision.measurements!.medianAttackDistanceMs! > 8,
     "the decision must rest on the measured attack distance, not a guess");
   assert.deepEqual(drumTrackIds(planFor(anchor, donor, "donor-drums")), ["bed-drums"],

@@ -10,6 +10,7 @@ import {
   type FormWindow,
 } from "./musical-form";
 import { displaySourceSectionLabel, normalizeSourceSections } from "../types/source-sections";
+import { DESKTOP_SECTION_ENGINE_VERSION } from "../types/analysis-provenance";
 
 const window = (startBar: number, role: "a" | "b" | "c", energyDb = -20): FormWindow => ({
   startBar,
@@ -176,7 +177,7 @@ test("a breakdown candidate requires active vocals and drums around a sustained 
   const persistedShape = normalizeSourceSections(
     withFormEvidence,
     beatGridMs,
-    { analysisEngine: "arena-js-structure", analysisEngineVersion: "1.15.0", sourceChecksumSha256: "a".repeat(64) },
+    { analysisEngine: "arena-js-structure", analysisEngineVersion: DESKTOP_SECTION_ENGINE_VERSION, sourceChecksumSha256: "a".repeat(64) },
     ({ startBeatIndex, endBeatIndex }) => `${startBeatIndex}-${endBeatIndex}`,
     64_000,
   );

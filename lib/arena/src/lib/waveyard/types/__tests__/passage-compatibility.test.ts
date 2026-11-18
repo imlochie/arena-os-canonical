@@ -149,7 +149,7 @@ test("per-stem shifts are visible as context but never decide cross-song eligibi
       separationJobId: "separation-job",
       stemChecksumSha256: "d".repeat(64),
       sectionRmsDb: -18,
-      boundaryChanges: [{ beatIndex: 4, deltaDb: -9.2 }],
+      boundaryChanges: [{ beatIndex: 4, kind: "level", deltaDb: -9.2 }],
     }],
   };
   const result = compatibility(
@@ -160,6 +160,52 @@ test("per-stem shifts are visible as context but never decide cross-song eligibi
   assert.equal(result.dimensions.stemActivity.status, "context");
   assert.match(result.dimensions.stemActivity.detail, /Anchor: vocals at beat 4 -9\.2 dB/);
   assert.match(result.dimensions.stemActivity.detail, /not a semantic role or compatibility gate/);
+});
+
+test("passage parser preserves source-linked spectral and sampled-flux transition evidence", () => {
+  const stemActivity = measured([{
+    stemType: "drums",
+    stemAssetId: "drum-stem",
+    separationJobId: "separation",
+    stemChecksumSha256: "d".repeat(64),
+    sectionRmsDb: -20,
+    spectralShape: [0.7, 0.1, 0.15, 0.05] as [number, number, number, number],
+    sampledSpectralFlux: 0.12,
+    boundaryChanges: [
+      { beatIndex: 4, kind: "spectrum" as const, spectralDistance: 0.31 },
+      { beatIndex: 8, kind: "spectral-flux" as const, spectralFluxRatio: 2.4 },
+    ],
+  }]);
+  const value = fingerprint("sha-a", 0, 16, { stemActivity });
+  assert.deepEqual(parsePassageFingerprint(value), value);
+  assert.equal(parsePassageFingerprint({
+    ...value,
+    stemActivity: measured([{
+      ...stemActivity.value[0]!,
+      spectralShape: [0.8, 0.1, 0.1, 0.1],
+    }]),
+  }), null, "band shares that do not sum to one are rejected");
+  assert.equal(parsePassageFingerprint({
+    ...value,
+    stemActivity: measured([{
+      ...stemActivity.value[0]!,
+      boundaryChanges: [{ beatIndex: 4, kind: "spectrum", spectralDistance: 1.2 }],
+    }]),
+  }), null, "unbounded spectral distances are rejected rather than treated as evidence");
+  assert.equal(parsePassageFingerprint({
+    ...value,
+    stemActivity: measured([{
+      ...stemActivity.value[0]!,
+      boundaryChanges: [{ beatIndex: 8, kind: "spectral-flux", spectralFluxRatio: 201 }],
+    }]),
+  }), null, "spectral-flux ratios remain bounded by the analyzer's maximum range");
+  assert.equal(parsePassageFingerprint({
+    ...value,
+    stemActivity: measured([{
+      ...stemActivity.value[0]!,
+      boundaryChanges: [{ beatIndex: 4, spectralDistance: 0.3 }],
+    }]),
+  }), null, "current fingerprints require an explicit transition evidence kind");
 });
 
 test("isolated vocal pitch-continuity runs remain visible context, not lyric claims or eligibility gates", () => {
@@ -379,14 +425,16 @@ test("automatic hybrid reports checksum-bound chord progression context without 
   const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  const pair = result.plan.compatibility?.pairs[0];
-  assert.equal(pair?.eligible, true);
-  assert.equal(pair?.dimensions.chordProgression?.status, "context");
-  assert.equal(pair?.dimensions.chordProgression?.similarity, 1);
-  assert.match(pair?.dimensions.chordProgression?.detail ?? "", /Advisory only/);
-  assert.equal(result.plan.compatibility?.pairs[1]?.dimensions.chordProgression?.similarity, 0);
-  assert.deepEqual(result.plan.tracks.find((track) => track.stemType === "vocals")?.clips.map((clip) => clip.sourceOffsetMs), [8_000]);
-  assert.ok(result.plan.provenance.decisions.some((decision) => decision.includes("advisory checksum-bound chord-progression")));
+  const pairs = result.plan.compatibility?.pairs ?? [];
+  const matchingProgression = pairs.find((pair) => pair.donorSectionId === "b-1");
+  const contrastingProgression = pairs.find((pair) => pair.donorSectionId === "b-0");
+  assert.equal(matchingProgression?.eligible, true);
+  assert.equal(matchingProgression?.dimensions.chordProgression?.status, "context");
+  assert.equal(matchingProgression?.dimensions.chordProgression?.similarity, 1);
+  assert.match(matchingProgression?.dimensions.chordProgression?.detail ?? "", /Advisory only/);
+  assert.equal(contrastingProgression?.dimensions.chordProgression?.similarity, 0);
+  assert.deepEqual(result.plan.tracks.find((track) => track.stemType === "vocals")?.clips.map((clip) => clip.sourceOffsetMs), [0],
+    "the checksum-bound chord comparison is explanatory context, not a donor-section ranking gate");
 });
 
 test("automatic hybrid reports a harmonic conflict and abstains from building clips", () => {

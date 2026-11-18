@@ -331,6 +331,7 @@ test("per-stem PCM adds a boundary only for a sustained activity change, not a o
   assert.ok(profile);
   const changes = detectStemActivityBoundaryChanges([profile]);
   assert.deepEqual(changes.map((change) => change.beatIndex), [16]);
+  assert.equal(changes[0]?.kind, "level");
   assert.ok(Math.abs(changes[0]!.deltaDb) >= 6);
   const simultaneous = detectStemActivityBoundaryChanges([
     profile,
@@ -366,6 +367,90 @@ test("per-stem PCM adds a boundary only for a sustained activity change, not a o
   });
   assert.ok(transientProfile);
   assert.deepEqual(detectStemActivityBoundaryChanges([transientProfile]), []);
+});
+
+test("closely spaced stem changes stay as fingerprint evidence instead of fragmenting sections", () => {
+  const longGrid = Array.from({ length: 65 }, (_, index) => index * 500);
+  const result = desktopSectionCandidates(
+    longGrid,
+    new Float32Array(3_300),
+    frameMs,
+    new Float32Array(ANALYSIS_PCM_RATE * 32),
+    [],
+    [
+      { beatIndex: 16, stemType: "drums", kind: "spectrum", spectralDistance: 0.3, evidenceStrength: 0.7 },
+      { beatIndex: 20, stemType: "vocals", kind: "spectral-flux", spectralFluxRatio: 2.1, evidenceStrength: 0.8 },
+    ],
+  );
+  assert.ok(result);
+  assert.ok(result.some((candidate) => candidate.startBeatIndex === 16));
+  assert.equal(result.some((candidate) => candidate.startBeatIndex === 20), false,
+    "second nearby measurement is preserved for passage fingerprints without creating a one-bar section");
+});
+
+test("stem texture changes are detected at steady loudness, while isolated fills do not become boundaries", () => {
+  const longGrid = Array.from({ length: 65 }, (_, index) => index * 500);
+  const pcm = new Float32Array(ANALYSIS_PCM_RATE * 32);
+  for (let sample = 0; sample < pcm.length; sample += 1) {
+    const frequency = sample < ANALYSIS_PCM_RATE * 8 ? 110 : 4_000;
+    pcm[sample] = 0.08 * Math.sin((2 * Math.PI * frequency * sample) / ANALYSIS_PCM_RATE);
+  }
+  const profile = buildStemActivityProfile(pcm, longGrid, {
+    stemType: "drums",
+    stemAssetId: "stem-drums",
+    separationJobId: "separation-current",
+    stemChecksumSha256: "e".repeat(64),
+  });
+  assert.ok(profile);
+  assert.ok(Math.abs(profile.rmsDbByBar[3]! - profile.rmsDbByBar[4]!) < 0.2,
+    "the test transition changes spectrum, not average loudness");
+  const changes = detectStemActivityBoundaryChanges([profile]);
+  const spectrumChange = changes.find((change) => change.kind === "spectrum");
+  assert.equal(spectrumChange?.beatIndex, 16);
+  assert.ok((spectrumChange?.spectralDistance ?? 0) >= 0.18);
+  assert.equal(changes.some((change) => change.kind === "level"), false);
+
+  const oneBarFill = new Float32Array(pcm.length);
+  for (let sample = 0; sample < oneBarFill.length; sample += 1) {
+    const bar = Math.floor(sample / (ANALYSIS_PCM_RATE * 2));
+    const frequency = bar === 4 ? 4_000 : 110;
+    oneBarFill[sample] = 0.08 * Math.sin((2 * Math.PI * frequency * sample) / ANALYSIS_PCM_RATE);
+  }
+  const fillProfile = buildStemActivityProfile(oneBarFill, longGrid, {
+    stemType: "drums",
+    stemAssetId: "stem-drums-fill",
+    separationJobId: "separation-current",
+    stemChecksumSha256: "f".repeat(64),
+  });
+  assert.ok(fillProfile);
+  assert.deepEqual(detectStemActivityBoundaryChanges([fillProfile]), [],
+    "a single-bar fill is not persistent on both sides of the boundary");
+});
+
+test("persistent sampled spectral-flux changes expose rhythmic texture shifts without claiming beat counts", () => {
+  const longGrid = Array.from({ length: 65 }, (_, index) => index * 500);
+  const pcm = new Float32Array(ANALYSIS_PCM_RATE * 32);
+  for (let sample = 0; sample < pcm.length; sample += 1) {
+    const bar = Math.floor(sample / (ANALYSIS_PCM_RATE * 2));
+    const timeSeconds = sample / ANALYSIS_PCM_RATE;
+    // Equal-RMS sine before; equal-RMS, regularly gated sine after.
+    const gate = bar < 4 ? 1 : (timeSeconds * 8) % 1 < 0.5 ? Math.SQRT2 : 0;
+    pcm[sample] = 0.08 * gate * Math.sin((2 * Math.PI * 110 * sample) / ANALYSIS_PCM_RATE);
+  }
+  const profile = buildStemActivityProfile(pcm, longGrid, {
+    stemType: "drums",
+    stemAssetId: "stem-drums-rhythm",
+    separationJobId: "separation-current",
+    stemChecksumSha256: "1".repeat(64),
+  });
+  assert.ok(profile);
+  assert.ok(Math.abs(profile.rmsDbByBar[3]! - profile.rmsDbByBar[4]!) < 0.2,
+    "the change is rhythmic texture, not mean loudness");
+  const event = detectStemActivityBoundaryChanges([profile])
+    .find((change) => change.beatIndex === 16 && change.kind === "spectral-flux");
+  assert.ok(event);
+  assert.ok((event.spectralFluxRatio ?? 0) >= 1.8);
+  assert.ok((profile.sampledSpectralFluxByBar[4] ?? 0) > (profile.sampledSpectralFluxByBar[3] ?? 0));
 });
 
 test("sustained vocal entrances and dropouts add explicit event boundaries without semantic section labels", () => {
@@ -423,6 +508,7 @@ test("stem activity is persisted as source-linked signal evidence, not a semanti
     stemActivityBoundaryChanges: [{
       beatIndex: 4,
       stemType: "vocals",
+      kind: "level",
       deltaDb: -9.2,
       evidenceStrength: 0.511,
     }],
@@ -432,7 +518,9 @@ test("stem activity is persisted as source-linked signal evidence, not a semanti
     assert.equal(fingerprint.stemActivity.value[0]?.stemType, "vocals");
     assert.equal(fingerprint.stemActivity.value[0]?.stemAssetId, "stem-vocals");
     assert.equal(fingerprint.stemActivity.value[0]?.separationJobId, "separation-current");
-    assert.deepEqual(fingerprint.stemActivity.value[0]?.boundaryChanges, [{ beatIndex: 4, deltaDb: -9.2 }]);
+    assert.deepEqual(fingerprint.stemActivity.value[0]?.boundaryChanges, [{ beatIndex: 4, kind: "level", deltaDb: -9.2 }]);
+    assert.equal(fingerprint.stemActivity.value[0]?.spectralShape?.length, 4);
+    assert.ok((fingerprint.stemActivity.value[0]?.sampledSpectralFlux ?? -1) >= 0);
   }
   assert.doesNotMatch(JSON.stringify(fingerprint), /chorus|verse/i);
 });

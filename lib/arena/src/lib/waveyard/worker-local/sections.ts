@@ -1,9 +1,9 @@
 /**
  * Local section-analysis job handler — a faithful port of the worker's
  * processSourceSectionAnalysis, with the structure engine reimplemented in
- * JS: conservative boundaries use source onset novelty plus sustained changes
- * from checksum-matched separated-stem and vocal-activity evidence; repeated
- * phrases remain supported. Repetition alone is not a verse/chorus decision:
+ * JS: conservative boundaries use source onset novelty plus sustained level,
+ * spectral-shape, sampled-flux and vocal-activity changes from checksum-matched
+ * separated stems; repeated phrases remain supported. Repetition alone is not a verse/chorus decision:
  * optional isolated-vocal recurrence, alternating context and dynamic lift
  * now support explicitly unverified musical-form hypotheses.
  * Persisted, source-checksum-bound phrase fingerprints may later be compared
