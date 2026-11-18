@@ -555,6 +555,10 @@ type LiveStemSectionEvidence = LiveStemTempoEvidence & {
   donorVocalActivityStartsMs?: unknown;
   recipientVoicedPhraseStartsMs?: unknown;
   donorVoicedPhraseStartsMs?: unknown;
+  recipientVocalActivityIntervals?: unknown;
+  donorVocalActivityIntervals?: unknown;
+  recipientVoicedPhraseIntervals?: unknown;
+  donorVoicedPhraseIntervals?: unknown;
   donorStemDurationMs?: number | null;
   recipientBpm?: number | null;
   donorBpm?: number | null;
@@ -606,6 +610,7 @@ function beatBoundaryMs(grid: readonly number[], beatIndex: number): number | nu
 }
 
 type VocalOnset = { startMs: number; confidence: number };
+type VocalInterval = { startMs: number; endMs: number; confidence: number };
 type VocalTimingEvidence = Pick<
   LiveStemSectionAlignmentCandidate,
   | "vocalTimingSimilarity"
@@ -613,6 +618,10 @@ type VocalTimingEvidence = Pick<
   | "vocalTimingRecipientEventCount"
   | "vocalTimingDonorEventCount"
   | "vocalTimingBasis"
+>;
+type VocalPhraseShapeEvidence = Pick<
+  LiveStemSectionAlignmentCandidate,
+  "vocalPhraseShapeSimilarity" | "vocalPhraseShapeBasis"
 >;
 
 const LIVE_VOCAL_ONSET_CONFIDENCE_MIN = 0.65;
@@ -754,6 +763,248 @@ function compareVocalOnsetTiming(input: {
   };
 }
 
+function vocalIntervalsInWindow(value: unknown, startMs: number, endMs: number): VocalInterval[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry): VocalInterval[] => {
+    if (!entry || typeof entry !== "object") return [];
+    const interval = entry as Partial<VocalInterval>;
+    if (!Number.isSafeInteger(interval.startMs)
+      || !Number.isSafeInteger(interval.endMs)
+      || interval.endMs! <= interval.startMs!
+      || !Number.isFinite(interval.confidence)
+      || interval.confidence! < LIVE_VOCAL_ONSET_CONFIDENCE_MIN
+      || interval.confidence! > 1
+      || interval.endMs! <= startMs
+      || interval.startMs! >= endMs) return [];
+    return [{
+      startMs: Math.max(startMs, interval.startMs!),
+      endMs: Math.min(endMs, interval.endMs!),
+      confidence: interval.confidence!,
+    }];
+  });
+}
+
+/**
+ * Compare the source-relative duration and gaps of voiced runs inside already
+ * qualified music windows. Confidence-weighted coverage prevents a good entry
+ * onset from hiding a donor that sustains through the recipient's vocal rests.
+ */
+function compareVocalPhraseShape(input: {
+  recipientWindowStartMs: number;
+  recipientWindowEndMs: number;
+  donorWindowStartMs: number;
+  donorWindowEndMs: number;
+  stretchRatio: number;
+  recipientVoicedPhraseIntervals?: unknown;
+  donorVoicedPhraseIntervals?: unknown;
+  recipientVocalActivityIntervals?: unknown;
+  donorVocalActivityIntervals?: unknown;
+}): VocalPhraseShapeEvidence {
+  const recipientPhrases = vocalIntervalsInWindow(
+    input.recipientVoicedPhraseIntervals,
+    input.recipientWindowStartMs,
+    input.recipientWindowEndMs,
+  );
+  const donorPhrases = vocalIntervalsInWindow(
+    input.donorVoicedPhraseIntervals,
+    input.donorWindowStartMs,
+    input.donorWindowEndMs,
+  );
+  const phraseEvidenceAvailable = recipientPhrases.length > 0 && donorPhrases.length > 0;
+  const recipientIntervals = phraseEvidenceAvailable
+    ? recipientPhrases
+    : vocalIntervalsInWindow(
+      input.recipientVocalActivityIntervals,
+      input.recipientWindowStartMs,
+      input.recipientWindowEndMs,
+    );
+  const donorIntervals = phraseEvidenceAvailable
+    ? donorPhrases
+    : vocalIntervalsInWindow(
+      input.donorVocalActivityIntervals,
+      input.donorWindowStartMs,
+      input.donorWindowEndMs,
+    );
+  if (recipientIntervals.length === 0 || donorIntervals.length === 0
+    || !Number.isFinite(input.stretchRatio) || input.stretchRatio <= 0) {
+    return { vocalPhraseShapeSimilarity: null, vocalPhraseShapeBasis: null };
+  }
+  const mappedDonorIntervals = donorIntervals.flatMap((interval) => {
+    const startMs = input.recipientWindowStartMs
+      + (interval.startMs - input.donorWindowStartMs) * input.stretchRatio;
+    const endMs = input.recipientWindowStartMs
+      + (interval.endMs - input.donorWindowStartMs) * input.stretchRatio;
+    const clippedStartMs = Math.max(input.recipientWindowStartMs, startMs);
+    const clippedEndMs = Math.min(input.recipientWindowEndMs, endMs);
+    return Number.isFinite(clippedStartMs) && Number.isFinite(clippedEndMs) && clippedEndMs > clippedStartMs
+      ? [{ startMs: clippedStartMs, endMs: clippedEndMs, confidence: interval.confidence }]
+      : [];
+  });
+  const endpoints = [...new Set([
+    input.recipientWindowStartMs,
+    input.recipientWindowEndMs,
+    ...recipientIntervals.flatMap((interval) => [interval.startMs, interval.endMs]),
+    ...mappedDonorIntervals.flatMap((interval) => [interval.startMs, interval.endMs]),
+  ])].sort((left, right) => left - right);
+  let recipientMass = 0;
+  let donorMass = 0;
+  let overlapMass = 0;
+  for (let index = 0; index < endpoints.length - 1; index += 1) {
+    const start = endpoints[index]!;
+    const end = endpoints[index + 1]!;
+    if (end <= start) continue;
+    const midpoint = (start + end) / 2;
+    const recipientConfidence = recipientIntervals.reduce((maximum, interval) =>
+      midpoint >= interval.startMs && midpoint < interval.endMs
+        ? Math.max(maximum, interval.confidence)
+        : maximum, 0);
+    const donorConfidence = mappedDonorIntervals.reduce((maximum, interval) =>
+      midpoint >= interval.startMs && midpoint < interval.endMs
+        ? Math.max(maximum, interval.confidence)
+        : maximum, 0);
+    const duration = end - start;
+    recipientMass += duration * recipientConfidence;
+    donorMass += duration * donorConfidence;
+    overlapMass += duration * Math.min(recipientConfidence, donorConfidence);
+  }
+  const totalMass = recipientMass + donorMass;
+  return {
+    vocalPhraseShapeSimilarity: totalMass > 0
+      ? Math.max(0, Math.min(1, 2 * overlapMass / totalMass))
+      : null,
+    vocalPhraseShapeBasis: phraseEvidenceAvailable ? "voiced-run" : "vocal-activity",
+  };
+}
+
+/** Projects a persisted active vocal donor's source events onto the session clock. */
+export function projectLiveVocalIntervalsFromSwap(
+  value: unknown,
+  donorEntryOffsetMs: number | null | undefined,
+  swapAtSeconds: number,
+  stretchRatio: number,
+): VocalInterval[] | null {
+  if (!Array.isArray(value)
+    || !Number.isSafeInteger(donorEntryOffsetMs)
+    || donorEntryOffsetMs! < 0
+    || !Number.isFinite(swapAtSeconds)
+    || swapAtSeconds < 0
+    || !Number.isFinite(stretchRatio)
+    || stretchRatio <= 0) return null;
+  const entryMs = donorEntryOffsetMs!;
+  const timelineStartMs = swapAtSeconds * 1_000;
+  return value.flatMap((entry): VocalInterval[] => {
+    if (!entry || typeof entry !== "object") return [];
+    const interval = entry as Partial<VocalInterval>;
+    if (!Number.isSafeInteger(interval.startMs)
+      || !Number.isSafeInteger(interval.endMs)
+      || interval.endMs! <= interval.startMs!
+      || !Number.isFinite(interval.confidence)
+      || interval.confidence! < 0
+      || interval.confidence! > 1
+      || interval.endMs! <= entryMs) return [];
+    const sourceStartMs = Math.max(entryMs, interval.startMs!);
+    const startMs = timelineStartMs + (sourceStartMs - entryMs) * stretchRatio;
+    const endMs = timelineStartMs + (interval.endMs! - entryMs) * stretchRatio;
+    return Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs
+      ? [{ startMs, endMs, confidence: interval.confidence! }]
+      : [];
+  }).sort((left, right) => left.startMs - right.startMs);
+}
+
+/** Projects persisted vocal onsets with the same mapping used for active-stem audio. */
+export function projectLiveVocalStartsFromSwap(
+  value: unknown,
+  donorEntryOffsetMs: number | null | undefined,
+  swapAtSeconds: number,
+  stretchRatio: number,
+): VocalOnset[] | null {
+  if (!Array.isArray(value)
+    || !Number.isSafeInteger(donorEntryOffsetMs)
+    || donorEntryOffsetMs! < 0
+    || !Number.isFinite(swapAtSeconds)
+    || swapAtSeconds < 0
+    || !Number.isFinite(stretchRatio)
+    || stretchRatio <= 0) return null;
+  const entryMs = donorEntryOffsetMs!;
+  const timelineStartMs = swapAtSeconds * 1_000;
+  return value.flatMap((entry): VocalOnset[] => {
+    if (!entry || typeof entry !== "object") return [];
+    const onset = entry as Partial<VocalOnset>;
+    if (!Number.isSafeInteger(onset.startMs)
+      || onset.startMs! < entryMs
+      || !Number.isFinite(onset.confidence)
+      || onset.confidence! < 0
+      || onset.confidence! > 1) return [];
+    const startMs = timelineStartMs + (onset.startMs! - entryMs) * stretchRatio;
+    return Number.isFinite(startMs) ? [{ startMs, confidence: onset.confidence! }] : [];
+  }).sort((left, right) => left.startMs - right.startMs);
+}
+
+export type LiveVocalTimingEvidence = {
+  vocalActivityStartsMs: VocalOnset[] | null;
+  vocalActivityIntervals: VocalInterval[] | null;
+  voicedPhraseStartsMs: VocalOnset[] | null;
+  voicedPhraseIntervals: VocalInterval[] | null;
+};
+
+/**
+ * Uses the vocal source that is actually audible at the playhead. Once a saved
+ * donor swap has begun, never rank against the original vocal's stale timing.
+ */
+export function resolveLiveRecipientVocalTiming(input: {
+  currentPositionSeconds: number;
+  originalEvidence: LiveVocalTimingEvidence;
+  activeSwap: { atSeconds: number; donorEntryOffsetMs: number | null } | null;
+  activeDonorEvidence: LiveVocalTimingEvidence | null;
+  stretchRatio: number;
+}): LiveVocalTimingEvidence & { unavailableAfterSwap: boolean } {
+  if (input.activeSwap === null || input.currentPositionSeconds < input.activeSwap.atSeconds) {
+    return { ...input.originalEvidence, unavailableAfterSwap: false };
+  }
+  if (input.activeDonorEvidence === null) {
+    return {
+      vocalActivityStartsMs: null,
+      vocalActivityIntervals: null,
+      voicedPhraseStartsMs: null,
+      voicedPhraseIntervals: null,
+      unavailableAfterSwap: true,
+    };
+  }
+  const projected = {
+    vocalActivityStartsMs: projectLiveVocalStartsFromSwap(
+      input.activeDonorEvidence.vocalActivityStartsMs,
+      input.activeSwap.donorEntryOffsetMs,
+      input.activeSwap.atSeconds,
+      input.stretchRatio,
+    ),
+    vocalActivityIntervals: projectLiveVocalIntervalsFromSwap(
+      input.activeDonorEvidence.vocalActivityIntervals,
+      input.activeSwap.donorEntryOffsetMs,
+      input.activeSwap.atSeconds,
+      input.stretchRatio,
+    ),
+    voicedPhraseStartsMs: projectLiveVocalStartsFromSwap(
+      input.activeDonorEvidence.voicedPhraseStartsMs,
+      input.activeSwap.donorEntryOffsetMs,
+      input.activeSwap.atSeconds,
+      input.stretchRatio,
+    ),
+    voicedPhraseIntervals: projectLiveVocalIntervalsFromSwap(
+      input.activeDonorEvidence.voicedPhraseIntervals,
+      input.activeSwap.donorEntryOffsetMs,
+      input.activeSwap.atSeconds,
+      input.stretchRatio,
+    ),
+  };
+  const hasProjectedEvidence = Object.values(projected).some((events) =>
+    Array.isArray(events) && events.length > 0,
+  );
+  return {
+    ...projected,
+    unavailableAfterSwap: !hasProjectedEvidence,
+  };
+}
+
 function measuredRollingWindows(section: LiveStemSection): PassageRollingWindow[] | null {
   if (!section.sourceChecksumSha256 || !/^[a-f\d]{64}$/i.test(section.sourceChecksumSha256)) return null;
   const fingerprint = parsePassageFingerprint(section.passageFingerprint, {
@@ -892,13 +1143,27 @@ function livePhraseSectionAlignmentCandidates(
         recipientVoicedPhraseStartsMs: evidence.recipientVoicedPhraseStartsMs,
         donorVoicedPhraseStartsMs: evidence.donorVoicedPhraseStartsMs,
       });
+      const vocalPhraseShape: VocalPhraseShapeEvidence = evidence.stemType === "vocals"
+        ? compareVocalPhraseShape({
+          recipientWindowStartMs,
+          recipientWindowEndMs,
+          donorWindowStartMs,
+          donorWindowEndMs,
+          stretchRatio,
+          recipientVoicedPhraseIntervals: evidence.recipientVoicedPhraseIntervals,
+          donorVoicedPhraseIntervals: evidence.donorVoicedPhraseIntervals,
+          recipientVocalActivityIntervals: evidence.recipientVocalActivityIntervals,
+          donorVocalActivityIntervals: evidence.donorVocalActivityIntervals,
+        })
+        : { vocalPhraseShapeSimilarity: null, vocalPhraseShapeBasis: null };
       // Vocal replacement is a lead-performance decision: once a candidate
-      // already passes the musical-window, duration, tempo and harmonic checks,
-      // paired vocal timing ranks first. Other role swaps keep the established
-      // blended context rank instead of letting voice evidence dominate drums
-      // or instrumental decisions.
-      const rankingScore = evidence.stemType === "vocals" && vocalTiming.vocalTimingSimilarity !== null
-        ? vocalTiming.vocalTimingSimilarity
+      // passes the musical-window, duration, tempo and harmonic checks, measured
+      // entry timing ranks first, followed by voiced-run/rest coverage. Other
+      // roles keep the established blended context rank.
+      const vocalRankingEvidence = vocalTiming.vocalTimingSimilarity
+        ?? vocalPhraseShape.vocalPhraseShapeSimilarity;
+      const rankingScore = evidence.stemType === "vocals" && vocalRankingEvidence !== null
+        ? vocalRankingEvidence
         : vocalTiming.vocalTimingSimilarity === null
           ? score
           : score * (1 - LIVE_VOCAL_TIMING_RANK_WEIGHT)
@@ -952,6 +1217,7 @@ function livePhraseSectionAlignmentCandidates(
         transpositionSemitones: similarity.transpositionSemitones,
         roleActivitySimilarity,
         roleActivityType: roleActivitySimilarity === null ? null : evidence.stemType!,
+        ...vocalPhraseShape,
         rankingScore,
         positionDistance,
         ...vocalTiming,
@@ -960,6 +1226,9 @@ function livePhraseSectionAlignmentCandidates(
   }
   matches.sort((left, right) =>
     right.rankingScore - left.rankingScore
+      || (evidence?.stemType === "vocals"
+        ? (right.vocalPhraseShapeSimilarity ?? -1) - (left.vocalPhraseShapeSimilarity ?? -1)
+        : 0)
       || (right.roleActivitySimilarity ?? -1) - (left.roleActivitySimilarity ?? -1)
       || left.positionDistance - right.positionDistance,
   );
@@ -1106,6 +1375,9 @@ export type LiveStemSectionAlignmentCandidate = {
   vocalTimingRecipientEventCount: number | null;
   vocalTimingDonorEventCount: number | null;
   vocalTimingBasis: "voiced-phrase" | "vocal-activity" | null;
+  /** Confidence-weighted local voiced-run/rest overlap; not semantic lyric alignment. */
+  vocalPhraseShapeSimilarity: number | null;
+  vocalPhraseShapeBasis: "voiced-run" | "vocal-activity" | null;
   /** Same-role beat-level activity-shape similarity; null means it was not measured. */
   roleActivitySimilarity: number | null;
   roleActivityType: string | null;
@@ -1239,6 +1511,8 @@ export function liveStemSectionAlignmentCandidates(
       vocalTimingRecipientEventCount: null,
       vocalTimingDonorEventCount: null,
       vocalTimingBasis: null,
+      vocalPhraseShapeSimilarity: null,
+      vocalPhraseShapeBasis: null,
       roleActivitySimilarity: null,
       roleActivityType: null,
     }];

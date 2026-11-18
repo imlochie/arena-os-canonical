@@ -1,6 +1,39 @@
 # Arena handoff — read this first
 
-## Latest increment: private, editable vocal-section fallback
+## Latest increment: vocal swaps compare phrase duration and rests
+
+Session analysis now preserves the complete checksum-verified vocal activity
+and pitch-continuity intervals, including their end times; previously the live
+payload retained only each interval's start. Vocal donor candidates compare
+confidence-weighted voiced-run coverage after tempo mapping. Entry/onset timing
+still ranks first, and interval duration/rest overlap is a secondary vocal
+signal (or a fallback when paired onset evidence is unavailable). Other stem
+roles keep their existing ranking.
+
+For a later live swap, the recipient-side vocal evidence is taken from the
+currently audible donor and mapped from its saved entry point, swap position,
+and current tempo transform onto the session clock. Before that saved swap
+position, the original vocal remains the evidence; after it, the replaced
+original vocal is excluded. If the donor timing map is missing, the planner
+falls back to music-window evidence instead of pretending the old vocal is
+still audible.
+
+This measures vocal occupancy and rests, not transcript words, semantic
+phrasing, or whether a mashup sounds good. The comparison uses source-bounded
+persisted interval data and returns no preference when those intervals are
+missing or below the confidence threshold.
+
+**Verification:** 73 focused session-logic tests pass, including switching
+recipient evidence at a saved vocal swap position, donor-entry projection onto
+the session clock, and a case where
+two candidates have identical vocal phrase starts but only one preserves the
+recipient's voiced durations and rests. The database-backed session service
+test verifies interval ends survive the persisted route and out-of-range rows
+are rejected (54 passed, 6 environment-gated tests skipped). Workspace
+typechecks pass. This does not establish improved real-song or listener-rated
+mashup quality.
+
+## Previous increment: private, editable vocal-section fallback
 
 Studio now lets the user listen to a separated vocal stem and mark named source
 ranges (intro, verse, pre-chorus, chorus, bridge, breakdown, outro, or custom),

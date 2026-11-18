@@ -20,6 +20,9 @@ import {
   liveStemSectionAlignmentCandidates,
   liveStemCandidateDonorEntryMs,
   liveStemAutomaticEntryChoice,
+  projectLiveVocalIntervalsFromSwap,
+  projectLiveVocalStartsFromSwap,
+  resolveLiveRecipientVocalTiming,
   liveStemSectionOffsetSeconds,
   liveStemGrooveCorrection,
   liveStemTempoStretchRatio,
@@ -260,6 +263,78 @@ test("vocal-entry snap selects the nearest valid measured start and leaves missi
   assert.equal(nearestEntryEvidenceMs(500, []), null);
   assert.equal(nearestEntryEvidenceMs(-1, [{ startMs: 0 }]), null);
   assert.equal(nearestEntryEvidenceMs(500, [{ startMs: Number.NaN }]), null);
+});
+
+test("active vocal timing is mapped from the persisted donor entry onto the session clock", () => {
+  const intervals = projectLiveVocalIntervalsFromSwap([
+    { startMs: 500, endMs: 900, confidence: 0.9 },
+    { startMs: 1_000, endMs: 1_400, confidence: 0.8 },
+    { startMs: 2_000, endMs: 1_900, confidence: 0.9 },
+    { startMs: 1_500, endMs: 1_800, confidence: 1.2 },
+  ], 750, 10, 0.5);
+  assert.deepEqual(intervals, [
+    { startMs: 10_000, endMs: 10_075, confidence: 0.9 },
+    { startMs: 10_125, endMs: 10_325, confidence: 0.8 },
+  ], "pre-entry audio is clipped and later donor intervals keep the live stretch mapping");
+  assert.deepEqual(projectLiveVocalStartsFromSwap([
+    { startMs: 700, confidence: 0.9 },
+    { startMs: 750, confidence: 0.8 },
+    { startMs: 1_000, confidence: 0.7 },
+  ], 750, 10, 0.5), [
+    { startMs: 10_000, confidence: 0.8 },
+    { startMs: 10_125, confidence: 0.7 },
+  ]);
+  assert.equal(projectLiveVocalIntervalsFromSwap([], null, 10, 1), null,
+    "missing saved entry points cannot be guessed");
+});
+
+test("live vocal comparison switches evidence sources at the saved swap time", () => {
+  const originalEvidence = {
+    vocalActivityStartsMs: [{ startMs: 100, confidence: 0.9 }],
+    vocalActivityIntervals: [{ startMs: 100, endMs: 300, confidence: 0.9 }],
+    voicedPhraseStartsMs: [{ startMs: 200, confidence: 0.8 }],
+    voicedPhraseIntervals: [{ startMs: 200, endMs: 500, confidence: 0.8 }],
+  };
+  const activeDonorEvidence = {
+    vocalActivityStartsMs: [{ startMs: 1_000, confidence: 0.9 }],
+    vocalActivityIntervals: [{ startMs: 900, endMs: 1_200, confidence: 0.9 }],
+    voicedPhraseStartsMs: [{ startMs: 1_050, confidence: 0.8 }],
+    voicedPhraseIntervals: [{ startMs: 1_000, endMs: 1_400, confidence: 0.8 }],
+  };
+  const beforeSwap = resolveLiveRecipientVocalTiming({
+    currentPositionSeconds: 9.5,
+    originalEvidence,
+    activeSwap: { atSeconds: 10, donorEntryOffsetMs: 950 },
+    activeDonorEvidence,
+    stretchRatio: 0.5,
+  });
+  assert.deepEqual(beforeSwap, { ...originalEvidence, unavailableAfterSwap: false },
+    "the original vocal remains the evidence before its saved replacement begins");
+  const afterSwap = resolveLiveRecipientVocalTiming({
+    currentPositionSeconds: 11,
+    originalEvidence,
+    activeSwap: { atSeconds: 10, donorEntryOffsetMs: 950 },
+    activeDonorEvidence,
+    stretchRatio: 0.5,
+  });
+  assert.deepEqual(afterSwap.vocalActivityIntervals, [
+    { startMs: 10_000, endMs: 10_125, confidence: 0.9 },
+  ]);
+  assert.deepEqual(afterSwap.voicedPhraseIntervals, [
+    { startMs: 10_025, endMs: 10_225, confidence: 0.8 },
+  ]);
+  assert.equal(afterSwap.unavailableAfterSwap, false);
+
+  const unavailable = resolveLiveRecipientVocalTiming({
+    currentPositionSeconds: 11,
+    originalEvidence,
+    activeSwap: { atSeconds: 10, donorEntryOffsetMs: null },
+    activeDonorEvidence,
+    stretchRatio: 0.5,
+  });
+  assert.equal(unavailable.unavailableAfterSwap, true);
+  assert.equal(unavailable.vocalActivityIntervals, null,
+    "the old source-vocal evidence is never reused after replacement when mapping is missing");
 });
 
 test("manual donor vocal entry survives native or measured tempo alignment", () => {
@@ -651,6 +726,69 @@ test("vocal replacements rank confident vocal timing ahead of small music-score 
   );
   assert.equal(withoutVocalEvidence[0]?.donorWindowStartMs, 0,
     "without paired vocal timing, the established musical score remains the ranking basis");
+});
+
+test("vocal donor ranking uses voiced-run duration and rests after matched phrase starts", () => {
+  const checksum = "a".repeat(64);
+  const recipient = testLongSourceSection(checksum, [testRollingWindow(0, 0)]);
+  const donor = testLongSourceSection("b".repeat(64), [
+    testRollingWindow(0, 0),
+    testRollingWindow(8, 0),
+  ]);
+  const recipientBeatGridMs = Array.from({ length: 49 }, (_, index) => index * 500);
+  const donorBeatGridMs = Array.from({ length: 49 }, (_, index) => index * 500);
+  const recipientVoicedPhraseStartsMs = [500, 1_500, 2_500, 3_500]
+    .map((startMs) => ({ startMs, confidence: 0.9 }));
+  const donorVoicedPhraseStartsMs = [500, 1_500, 2_500, 3_500, 4_500, 5_500, 6_500, 7_500]
+    .map((startMs) => ({ startMs, confidence: 0.9 }));
+  const evidence = testLiveStemEvidence({
+    recipientBeatGridMs,
+    donorBeatGridMs,
+    stemType: "vocals",
+    recipientVoicedPhraseStartsMs,
+    donorVoicedPhraseStartsMs,
+    recipientVoicedPhraseIntervals: [
+      { startMs: 500, endMs: 900, confidence: 0.9 },
+      { startMs: 1_500, endMs: 1_900, confidence: 0.9 },
+      { startMs: 2_500, endMs: 2_900, confidence: 0.9 },
+      { startMs: 3_500, endMs: 3_900, confidence: 0.9 },
+    ],
+    donorVoicedPhraseIntervals: [
+      { startMs: 500, endMs: 550, confidence: 0.9 },
+      { startMs: 1_500, endMs: 1_550, confidence: 0.9 },
+      { startMs: 2_500, endMs: 2_550, confidence: 0.9 },
+      { startMs: 3_500, endMs: 3_550, confidence: 0.9 },
+      { startMs: 4_500, endMs: 4_900, confidence: 0.9 },
+      { startMs: 5_500, endMs: 5_900, confidence: 0.9 },
+      { startMs: 6_500, endMs: 6_900, confidence: 0.9 },
+      { startMs: 7_500, endMs: 7_900, confidence: 0.9 },
+    ],
+  });
+
+  const candidates = liveStemSectionAlignmentCandidates([recipient], [donor], 1, 1, evidence);
+  assert.equal(candidates.length, 2);
+  assert.equal(candidates[0]?.vocalTimingSimilarity, candidates[1]?.vocalTimingSimilarity,
+    "both alternatives have matching phrase entries");
+  assert.equal(candidates[0]?.donorWindowStartMs, 4_000,
+    "the entry-tied donor that preserves voiced extents and rests ranks ahead");
+  assert.equal(candidates[0]?.vocalPhraseShapeSimilarity, 1);
+  assert.ok((candidates[1]?.vocalPhraseShapeSimilarity ?? 1) < 1,
+    "the first donor passage sustains only 50 ms after each otherwise matching start");
+  assert.equal(candidates[0]?.vocalPhraseShapeBasis, "voiced-run");
+
+  const withoutIntervals = liveStemSectionAlignmentCandidates(
+    [recipient],
+    [donor],
+    1,
+    1,
+    {
+      ...evidence,
+      recipientVoicedPhraseIntervals: undefined,
+      donorVoicedPhraseIntervals: undefined,
+    },
+  );
+  assert.equal(withoutIntervals[0]?.donorWindowStartMs, 0,
+    "unavailable interval extents do not manufacture a duration-based preference");
 });
 
 test("live vocal alternatives rank beat-mapped phrase timing without replacing music evidence", () => {

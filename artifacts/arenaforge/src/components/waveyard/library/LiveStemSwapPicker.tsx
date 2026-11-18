@@ -44,6 +44,7 @@ export interface LiveStemEntryReviewEvidence {
   suggestedManualEntryMs?: number | null;
   vocalActivityStartsMs: { startMs: number; confidence: number }[] | null;
   voicedPhraseStartsMs: { startMs: number; confidence: number }[] | null;
+  vocalTimingNote?: string | null;
   sections: Pick<SourceSection, "sectionIndex" | "startMs" | "label" | "labelConfidence">[] | null;
 }
 
@@ -386,6 +387,7 @@ export default function LiveStemSwapPicker({
   const [suggestedManualEntryMs, setSuggestedManualEntryMs] = useState<number | null>(null);
   const [entryVocalActivityStartsMs, setEntryVocalActivityStartsMs] = useState<{ startMs: number; confidence: number }[] | null>(null);
   const [entryVoicedPhraseStartsMs, setEntryVoicedPhraseStartsMs] = useState<{ startMs: number; confidence: number }[] | null>(null);
+  const [entryVocalTimingNote, setEntryVocalTimingNote] = useState<string | null>(null);
   const [entrySections, setEntrySections] = useState<LiveStemEntryReviewEvidence["sections"]>(null);
   const [entryCandidatesLoading, setEntryCandidatesLoading] = useState(false);
   const [entryCandidatesError, setEntryCandidatesError] = useState<string | null>(null);
@@ -420,6 +422,7 @@ export default function LiveStemSwapPicker({
     setSuggestedManualEntryMs(null);
     setEntryVocalActivityStartsMs(null);
     setEntryVoicedPhraseStartsMs(null);
+    setEntryVocalTimingNote(null);
     setEntrySections(null);
     setEntryCandidatesLoading(stemType === "vocals");
     setEntryCandidatesError(null);
@@ -436,6 +439,7 @@ export default function LiveStemSwapPicker({
         suggestedManualEntryMs: null,
         vocalActivityStartsMs: null,
         voicedPhraseStartsMs: null,
+        vocalTimingNote: null,
         sections: null,
       }),
       onResolvePreviewAsset(donorId, stemType).catch(() => null),
@@ -449,6 +453,7 @@ export default function LiveStemSwapPicker({
         setSuggestedManualEntryMs(review.suggestedManualEntryMs ?? null);
         setEntryVocalActivityStartsMs(review.vocalActivityStartsMs);
         setEntryVoicedPhraseStartsMs(review.voicedPhraseStartsMs);
+        setEntryVocalTimingNote(review.vocalTimingNote ?? null);
         setEntrySections(review.sections);
         setManualEntryMs(preserveManualEntry
           ? preservedManualEntryMs
@@ -547,6 +552,7 @@ export default function LiveStemSwapPicker({
     setEntryCandidates([]);
     setEntryVocalActivityStartsMs(null);
     setEntryVoicedPhraseStartsMs(null);
+    setEntryVocalTimingNote(null);
     setEntrySections(null);
     setEntryCandidatesLoading(false);
     setEntryCandidatesError(null);
@@ -1064,8 +1070,11 @@ export default function LiveStemSwapPicker({
                 </button>
               </header>
               <p className="wy-vocal-entry-evidence">
-                These are measured rolling audio windows, not lyric phrases or verified verse/chorus labels. When both tracks have enough checksum-current vocal onsets, their beat-relative timing refines the ranking; it does not prove lyric or musical-form alignment.
+                These are measured rolling audio windows, not lyric phrases or verified verse/chorus labels. When both sides have current vocal evidence, beat-relative phrase entry ranks first and voiced-run duration/rest coverage refines the ranking. Saved donor entries are mapped back to the live session clock; unmappable vocal evidence is excluded rather than replaced by stale source timing.
               </p>
+              {entryVocalTimingNote && (
+                <p className="wy-vocal-entry-no-candidates" role="status">{entryVocalTimingNote}</p>
+              )}
               {currentPlaying ? (
                 <button type="button" className="wy-vocal-entry-compare" onClick={() => {
                   stopEntryPreview();
@@ -1123,6 +1132,12 @@ export default function LiveStemSwapPicker({
                           {" · "}{candidate.vocalTimingMatchedEvents} aligned of{" "}
                           {candidate.vocalTimingRecipientEventCount} recipient /{" "}
                           {candidate.vocalTimingDonorEventCount} donor onsets
+                        </span>
+                      )}
+                      {candidate.vocalPhraseShapeSimilarity !== null && (
+                        <span title="Confidence-weighted overlap of checksum-current voiced-run or activity intervals after tempo mapping. It compares vocal occupancy and rests; it does not identify words or lyrics.">
+                          Vocal {candidate.vocalPhraseShapeBasis === "voiced-run" ? "voiced-run" : "activity"} coverage{" "}
+                          {formatEvidencePercent(candidate.vocalPhraseShapeSimilarity)}
                         </span>
                       )}
                       {candidate.roleActivitySimilarity !== null && candidate.roleActivityType !== null && (

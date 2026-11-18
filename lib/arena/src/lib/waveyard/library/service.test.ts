@@ -1939,7 +1939,9 @@ test("session: a missing original can be restored without changing stems or sess
       downbeatGridMs: null,
       sections: null,
       vocalActivityStartsMs: null,
+      vocalActivityIntervals: null,
       voicedPhraseStartsMs: null,
+      voicedPhraseIntervals: null,
       isolatedDrumTempo: null,
       isolatedDrumTempoStatus: "unavailable",
     });
@@ -3650,8 +3652,14 @@ test("session: meeting-point primitives power compatibility (analysis surfaced, 
       .where(eq(schema.sourceAnalyses.sourceAssetId, sourceB));
     assert.deepEqual(analysisB?.vocalActivityStartsMs, [{ startMs: 250, confidence: 0.92 }],
       "session analysis exposes only current-checksum vocal activity that ends inside the source and stem");
+    assert.deepEqual(analysisB?.vocalActivityIntervals, [{
+      startMs: 250, endMs: 850, confidence: 0.92,
+    }], "session analysis preserves current-checksum activity duration while rejecting out-of-range intervals");
     assert.deepEqual(analysisB?.voicedPhraseStartsMs, [{ startMs: 1_100, confidence: 0.7 }],
       "pitch-continuity phrase starts remain distinct and source-bounded");
+    assert.deepEqual(analysisB?.voicedPhraseIntervals, [{
+      startMs: 1_100, endMs: 1_900, confidence: 0.7,
+    }], "live matching can use full pitch-continuity extents, not only their starts");
 
     // Exercise the actual persisted session payload and live-swap offset with
     // exact, current isolated-drum events. The synthetic 300 BPM grid keeps

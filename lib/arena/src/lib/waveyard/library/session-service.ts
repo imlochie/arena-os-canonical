@@ -2071,8 +2071,12 @@ export interface SessionTrackAnalysis {
   sections: SourceSection[] | null;
   /** Checksum-verified isolated-vocal activity starts; these are not lyric word boundaries. */
   vocalActivityStartsMs: { startMs: number; confidence: number }[] | null;
+  /** Checksum-verified activity intervals; durations preserve where the backing has vocal space. */
+  vocalActivityIntervals: { startMs: number; endMs: number; confidence: number }[] | null;
   /** Pitch-continuity phrase candidates; unvoiced consonants and lyric boundaries are not guaranteed. */
   voicedPhraseStartsMs: { startMs: number; confidence: number }[] | null;
+  /** Full pitch-continuity runs; these are voiced-run extents, not lyric or word boundaries. */
+  voicedPhraseIntervals: { startMs: number; endMs: number; confidence: number }[] | null;
   /** Exact-current isolated drum timing; null when the stem evidence is absent or untrusted. */
   isolatedDrumTempo: IsolatedDrumTempoEvidence | null;
   isolatedDrumTempoStatus: "not_applicable" | "queued" | "processing" | "complete" | "failed" | "unavailable";
@@ -2242,7 +2246,9 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
       downbeatGridMs: null,
       sections: null,
       vocalActivityStartsMs: null,
+      vocalActivityIntervals: null,
       voicedPhraseStartsMs: null,
+      voicedPhraseIntervals: null,
       ...drumTempoState,
     };
   }
@@ -2260,7 +2266,9 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
       downbeatGridMs: null,
       sections: null,
       vocalActivityStartsMs: null,
+      vocalActivityIntervals: null,
       voicedPhraseStartsMs: null,
+      voicedPhraseIntervals: null,
       ...drumTempoState,
     };
   }
@@ -2388,7 +2396,9 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
     }
   }
   let vocalActivityStartsMs: SessionTrackAnalysis["vocalActivityStartsMs"] = null;
+  let vocalActivityIntervalData: SessionTrackAnalysis["vocalActivityIntervals"] = null;
   let voicedPhraseStartsMs: SessionTrackAnalysis["voicedPhraseStartsMs"] = null;
+  let voicedPhraseIntervalData: SessionTrackAnalysis["voicedPhraseIntervals"] = null;
   const vocalStem = detail.stems.find((stem) => stem.stemType === "vocals"
     && stem.engine !== "passthrough-unseparated");
   if (vocalStem && sourceTrack.checksumSha256 !== null) {
@@ -2447,7 +2457,7 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
           .limit(10_000),
       ]);
       const durationMs = Math.round(Math.min(detail.durationSeconds, vocalStem.durationSeconds) * 1000);
-      const validStarts = (rows: typeof activityRows) => rows.filter((row) =>
+      const validIntervals = (rows: typeof activityRows) => rows.filter((row) =>
         Number.isSafeInteger(row.startMs)
         && Number.isSafeInteger(row.endMs)
         && row.startMs >= 0
@@ -2456,9 +2466,11 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
         && Number.isFinite(row.confidence)
         && row.confidence >= 0
         && row.confidence <= 1,
-      ).map(({ startMs, confidence }) => ({ startMs, confidence }));
-      vocalActivityStartsMs = validStarts(activityRows);
-      voicedPhraseStartsMs = validStarts(phraseRows);
+      ).map(({ startMs, endMs, confidence }) => ({ startMs, endMs, confidence }));
+      vocalActivityIntervalData = validIntervals(activityRows);
+      voicedPhraseIntervalData = validIntervals(phraseRows);
+      vocalActivityStartsMs = vocalActivityIntervalData.map(({ startMs, confidence }) => ({ startMs, confidence }));
+      voicedPhraseStartsMs = voicedPhraseIntervalData.map(({ startMs, confidence }) => ({ startMs, confidence }));
     }
   }
   return {
@@ -2472,7 +2484,9 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
     downbeatGridMs,
     sections,
     vocalActivityStartsMs,
+    vocalActivityIntervals: vocalActivityIntervalData,
     voicedPhraseStartsMs,
+    voicedPhraseIntervals: voicedPhraseIntervalData,
     ...drumTempoState,
   };
 }

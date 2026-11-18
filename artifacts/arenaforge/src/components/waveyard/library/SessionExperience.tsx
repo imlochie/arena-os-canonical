@@ -66,6 +66,7 @@ import {
   liveStemBeatOffsetSeconds,
   liveStemDownbeatOffsetSeconds,
   projectLiveStemGridToCommonClock,
+  resolveLiveRecipientVocalTiming,
   resolveLiveStemSectionClock,
   liveStemDonorEntryOffsetSeconds,
   liveStemSectionAlignment,
@@ -170,7 +171,9 @@ interface SessionTrackItem {
     isolatedDrumTempoStatus: "not_applicable" | "queued" | "processing" | "complete" | "failed" | "unavailable";
     sections: SourceSection[] | null;
     vocalActivityStartsMs: { startMs: number; confidence: number }[] | null;
+    vocalActivityIntervals: { startMs: number; endMs: number; confidence: number }[] | null;
     voicedPhraseStartsMs: { startMs: number; confidence: number }[] | null;
+    voicedPhraseIntervals: { startMs: number; endMs: number; confidence: number }[] | null;
   } | null;
 }
 
@@ -203,7 +206,9 @@ function liveStemAssetId(stemIdOrUrl: string): string {
 function needsDetailedDonorEntryAnalysis(analysis: SessionTrackAnalysis | null): boolean {
   if (analysis === null
     || !Array.isArray(analysis.vocalActivityStartsMs)
+    || !Array.isArray(analysis.vocalActivityIntervals)
     || !Array.isArray(analysis.voicedPhraseStartsMs)
+    || !Array.isArray(analysis.voicedPhraseIntervals)
     || !Array.isArray(analysis.sections)) return true;
   return analysis.sections.some((section) => section.passageFingerprint == null);
 }
@@ -5171,6 +5176,13 @@ export default function SessionExperience({
   const swapExtra = (stemType: string) => {
     if (currentItem === null) return null;
     const swap = session.swaps.filter((s) => s.sessionTrackId === currentItem.id && s.stemType === stemType).at(-1);
+    const activeVocalSwap = session.swaps.filter((s) =>
+      s.sessionTrackId === currentItem.id && s.stemType === "vocals" && !cancelledSwapIds.has(s.id),
+    ).at(-1);
+    const activeVocalDonorAnalysis = activeVocalSwap === undefined ? null
+      : session.tracks.find((item) => item.track.id === activeVocalSwap.toTrackId)?.analysis
+        ?? activeVocalSwap.donorTrack?.analysis
+        ?? null;
     const pendingSwap = pendingSwaps.find((pending) => pending.sessionTrackId === currentItem.id && pending.stemType === stemType);
     const donors = session.tracks.filter((item) =>
       item.track.id !== currentItem.track.id && validateStemSwap(currentItem.stems, item.stems, stemType).ok,
@@ -5300,6 +5312,41 @@ export default function SessionExperience({
           ?? decksRef.current[activeDeck]?.transport.position
           ?? positions[activeDeck],
       );
+      const recipientVocalTiming = resolveLiveRecipientVocalTiming({
+        currentPositionSeconds,
+        originalEvidence: {
+          vocalActivityStartsMs: currentItem.analysis?.vocalActivityStartsMs ?? null,
+          vocalActivityIntervals: currentItem.analysis?.vocalActivityIntervals ?? null,
+          voicedPhraseStartsMs: currentItem.analysis?.voicedPhraseStartsMs ?? null,
+          voicedPhraseIntervals: currentItem.analysis?.voicedPhraseIntervals ?? null,
+        },
+        activeSwap: activeVocalSwap === undefined ? null : {
+          atSeconds: activeVocalSwap.atSeconds,
+          donorEntryOffsetMs: activeVocalSwap.donorEntryOffsetMs,
+        },
+        activeDonorEvidence: activeVocalDonorAnalysis === null ? null : {
+          vocalActivityStartsMs: activeVocalDonorAnalysis.vocalActivityStartsMs,
+          vocalActivityIntervals: activeVocalDonorAnalysis.vocalActivityIntervals,
+          voicedPhraseStartsMs: activeVocalDonorAnalysis.voicedPhraseStartsMs,
+          voicedPhraseIntervals: activeVocalDonorAnalysis.voicedPhraseIntervals,
+        },
+        stretchRatio: currentSwapSetup.tempoStretchRatios.vocals ?? 1,
+      });
+      const {
+        vocalActivityStartsMs: recipientVocalActivityStartsMs,
+        vocalActivityIntervals: recipientVocalActivityIntervals,
+        voicedPhraseStartsMs: recipientVoicedPhraseStartsMs,
+        voicedPhraseIntervals: recipientVoicedPhraseIntervals,
+      } = recipientVocalTiming;
+      const hasRecipientVocalTiming = [
+        recipientVocalActivityStartsMs,
+        recipientVocalActivityIntervals,
+        recipientVoicedPhraseStartsMs,
+        recipientVoicedPhraseIntervals,
+      ].some((events) => Array.isArray(events) && events.length > 0);
+      const vocalTimingNote = recipientVocalTiming.unavailableAfterSwap
+        ? "The current vocal donor has no usable saved timing map, so the replaced source vocal is excluded. Ranking falls back to measured music-window evidence."
+        : null;
       if (currentItem.analysis === null) return {
         candidates: [],
         donorStemDurationMs,
@@ -5344,10 +5391,14 @@ export default function SessionExperience({
         donorStemDurationMs,
         recipientBeatGridMs: currentSwapSetup.sectionClock.beatGridMs,
         donorBeatGridMs: donorAnalysis.beatGridMs,
-        recipientVocalActivityStartsMs: currentItem.analysis.vocalActivityStartsMs,
+        recipientVocalActivityStartsMs,
         donorVocalActivityStartsMs: donorAnalysis.vocalActivityStartsMs,
-        recipientVoicedPhraseStartsMs: currentItem.analysis.voicedPhraseStartsMs,
+        recipientVoicedPhraseStartsMs,
         donorVoicedPhraseStartsMs: donorAnalysis.voicedPhraseStartsMs,
+        recipientVocalActivityIntervals,
+        donorVocalActivityIntervals: donorAnalysis.vocalActivityIntervals,
+        recipientVoicedPhraseIntervals,
+        donorVoicedPhraseIntervals: donorAnalysis.voicedPhraseIntervals,
         recipientBpm: recipientTempo.bpm,
         donorBpm: donorTempo.bpm,
         recipientKey: candidateRecipientKey,
@@ -5365,6 +5416,7 @@ export default function SessionExperience({
         ),
         donorStemDurationMs,
         suggestedManualEntryMs,
+        vocalTimingNote,
         vocalActivityStartsMs: donorAnalysis.vocalActivityStartsMs,
         voicedPhraseStartsMs: donorAnalysis.voicedPhraseStartsMs,
         sections: donorAnalysis.sections,
