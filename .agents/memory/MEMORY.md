@@ -12,6 +12,7 @@
 - [Waveyard cross-stem timing](waveyard-cross-stem-timing.md) — same-role attacks may authorize phase correction; unlike stem roles are context, not alignment targets.
 - [Waveyard private device sync](waveyard-private-device-sync.md) — prefer QR pairing and encrypted laptop-hosted sync; keep audio and library files private and avoid paid-cloud dependency.
 - [Waveyard live-swap recovery](waveyard-live-swap-recovery.md) — keep the last audible layer playing while retaining the failed donor choice for an explicit retry.
+- [Waveyard vocal-entry swaps](waveyard-vocal-entry-swaps.md) — validate snapped donor starts against the live recipient clock and restore only the selected role while retaining other layers.
 - [Waveyard local phrase alignment](waveyard-live-section-confidence.md) — gate confidence per active/candidate passage; weak unrelated sections must not disable a whole track, and weak BPM never authorizes stretch.
 - [Windows browser model requirements](browser-model-requirements.md) — the model must be free, without provider usage quotas, and work on the user's laptop.
 - [Windows build resource limits](windows-build-resources.md) — user has seen Windows builds exhaust laptop disk; distinguish RAM, dependencies, staging, installers, and downloaded models.
