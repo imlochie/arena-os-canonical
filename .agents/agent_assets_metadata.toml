@@ -420,3 +420,17 @@ mtime_ms = 1794969481895
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/fc2caac1-cb34-4906-b9e4-965860a59a39/6a61f62c-d626-48cd-9d89-c1e71b1a668a"
 storage_version_token = "1794969538585322"
 content_type = "audio/wav"
+
+[[outputs]]
+id = "l1ieg-ZtZinYRrsc5TYV0"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/waveyard-current-13838b89-live-replay/september-drums-isolated-tempo-evidence-r5-swap.webm"
+type = "video"
+title = "Real Waveyard drum-swap capture"
+description = "Full-length September host with Another One Bites the Dust drums. The browser run measured tempo adaptation and the donor drum response through a real host break; this is not a human quality verdict."
+logical_id = "6597d04e-9142-4349-8396-f37c4bc1e13c"
+content_hash = "sha256:5f43259a8d1508b70e66b533421d43b6af9fc21bd260bcedcf73dac8cb07df4d"
+size = 493471
+mtime_ms = 1795079422322
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/6597d04e-9142-4349-8396-f37c4bc1e13c/5f6c17fe-b1f8-4242-9923-f74a4e62a089"
+storage_version_token = "1795079506797208"
+content_type = "video/webm"
