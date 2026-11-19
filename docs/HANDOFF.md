@@ -9,23 +9,26 @@ September and Another One Bites the Dust separations; neither reran separation.
 In the Chromium `SessionExperience` run, Waveyard's production pitch-continuity
 detector reprocessed the two exact vocal WAVs (65 September and 88 Queen
 voiced-run candidates; these are not words or semantic phrases). The session
-used Queen drums as its tempo master and the donor vocals were manually snapped
-to Queen's measured 25,263 ms voiced-run start (detector confidence 0.879312).
+preloaded Queen drums as a separate donor role, and the app's voiced-phrase snap
+path set the vocal cue to Queen's measured 25,263 ms voiced-run start (detector
+confidence 0.879312).
 The actual tempo-stretched donor vocal source began at 22.139 s in the prepared
 buffer, versus 22.038 s expected from the selected source cue and 0.872342 tempo
 ratio: **101 ms error**. The original September vocal gate reached zero, Queen
 vocals became audible, and September's bass and other stem kept playing at the
 same 0.872342 rate. Its drums were separately muted by the Queen drum swap; that
-donor remained active as the tempo master. Restoring vocals stopped the selected
-voice donor while the separate Queen drum donor remained active. The browser
-trace records about 1.42 s from applying the warmed vocal choice to audible
-playback; the tempo-matched preparation itself took 11.73 s and was completed
-before apply.
+donor remained active. Restoring vocals stopped the selected voice donor while
+the separate Queen drum donor remained active. The browser trace records about
+1.42 s from applying the warmed vocal choice to audible playback; the
+tempo-matched preparation itself took 11.73 s and was completed before apply.
+This verifies the configured shared playback rate and donor source offset; it
+does **not** prove that Queen's drum evidence independently selected the master
+tempo.
 
 The existing browser assertion had treated every newly created donor source as
-though it belonged to the vocal swap. That was false when a distinct drum master
+though it belonged to the vocal swap. That was false when a separate drum role
 was preloaded; the check now tags and verifies the selected vocal source
-separately and confirms the drum role survives vocal restore.
+separately and confirms the drum donor survives vocal restore.
 
 The separate real PostgreSQL acceptance then decoded the pinned September vocal
 stem through the same production detector, selected a sustained measured
@@ -43,12 +46,13 @@ the real PostgreSQL export remains in ignored test storage. The live browser
 session uses fixture-backed API state, while the separate export test uses the
 real database and production session, Studio, and export services.
 
-**Limit:** This proves one manually selected acoustic voiced-run snap, one
-cross-tempo vocal swap with a drum master, role-specific restore, and a
+**Limit:** This proves one acoustic voiced-run snap, one cross-tempo vocal swap
+with a concurrent drum donor, role-specific restore, and a
 detector-derived cue surviving a real database/Studio/export path. It does not
 prove lyric/word alignment, verse/chorus recognition, human-rated sound quality,
-or arbitrary-pair mashup quality. The measured voiced-run start is coarse audio
-evidence, not a certified lyric boundary.
+arbitrary-pair mashup quality, or that the drum donor independently chose the
+tempo. The measured voiced-run start is coarse audio evidence, not a certified
+lyric boundary.
 
 ## Current full-length real-stem replay — 2026-11-19
 
