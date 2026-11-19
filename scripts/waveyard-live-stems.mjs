@@ -2599,6 +2599,20 @@ try {
           const startErrorSeconds = Math.abs(closestStart.startedOffset - expectedBufferOffsetSeconds);
           assert.ok(startErrorSeconds <= 0.15,
             `the actual tempo-stretched vocal buffer must begin at the persisted measured phrase (expected ${expectedBufferOffsetSeconds.toFixed(3)}s, error ${startErrorSeconds.toFixed(3)}s): ${JSON.stringify(liveDonorSources)}`);
+          const taggedVocalSource = await page.evaluate(({ startedOffset, recipientTimeAtStart }) => {
+            const source = window.audioProbe.buffers.find(node =>
+              Math.abs((node.startedOffset ?? Infinity) - startedOffset) < 0.005
+              && Math.abs((node.recipientTimeAtStart ?? Infinity) - recipientTimeAtStart) < 0.005
+              && node.inputNode?.gain?.value > 0.03);
+            if (!source) return false;
+            source.__waveyardAcceptanceRole = "selected-vocal-donor";
+            return true;
+          }, {
+            startedOffset: closestStart.startedOffset,
+            recipientTimeAtStart: closestStart.recipientTimeAtStart,
+          });
+          assert.equal(taggedVocalSource, true,
+            "the measured phrase-start buffer can be identified for role-specific restore verification");
           Object.assign(manualVocalEntry, {
             expectedTempoMatchedBufferStartSeconds: expectedBufferOffsetSeconds,
             actualTempoMatchedBufferStartSeconds: closestStart.startedOffset,
@@ -2665,9 +2679,47 @@ try {
           );
           await current.getByTestId(`restore-live-swap-${combination.stemType}`).click();
           assert.ok((await restoreResponse).ok(), "restoring a live swap succeeds through the session route");
-          await page.waitForFunction(({ bufferCount }) =>
-            window.audioProbe.buffers.slice(bufferCount).every(source => (source.stopCount ?? 0) > 0),
-          { bufferCount }, { timeout: 5_000 });
+          const retainedPreloadedRoles = (combination.preloadedSwaps ?? []).some(
+            swap => swap.stemType !== combination.stemType,
+          );
+          if (manualVocalEntry !== null && retainedPreloadedRoles) {
+            const restoration = await page.evaluate(async () => {
+              const vocalSources = window.audioProbe.buffers.filter(
+                source => source.__waveyardAcceptanceRole === "selected-vocal-donor",
+              );
+              const otherDonors = window.audioProbe.buffers.filter(source =>
+                source.inputNode?.gain?.value > 0.03
+                && source.buffer?.duration > 0
+                && source.__waveyardAcceptanceRole !== "selected-vocal-donor",
+              );
+              otherDonors.forEach(source => { source.__waveyardAcceptanceRole = "retained-preloaded-donor"; });
+              const deadline = performance.now() + 5_000;
+              while (vocalSources.some(source => (source.stopCount ?? 0) === 0)
+                && performance.now() < deadline) {
+                await new Promise(resolve => setTimeout(resolve, 25));
+              }
+              return {
+                vocalSourcesStopped: vocalSources.length > 0
+                  && vocalSources.every(source => (source.stopCount ?? 0) > 0),
+                retainedDonorSources: otherDonors.map(source => ({
+                  stopped: (source.stopCount ?? 0) > 0,
+                  gain: source.inputNode?.gain?.value ?? null,
+                })),
+              };
+            });
+            assert.equal(restoration.vocalSourcesStopped, true,
+              `restoring vocals retires the selected phrase-snap donor source: ${JSON.stringify(restoration)}`);
+            if (retainedPreloadedRoles) {
+              assert.ok(restoration.retainedDonorSources.some(source =>
+                !source.stopped && (source.gain ?? 0) > 0.03),
+              `restoring vocals leaves the distinct preloaded donor role active: ${JSON.stringify(restoration)}`);
+            }
+            swapDetails.restoration = restoration;
+          } else {
+            await page.waitForFunction(({ bufferCount }) =>
+              window.audioProbe.buffers.slice(bufferCount).every(source => (source.stopCount ?? 0) > 0),
+            { bufferCount }, { timeout: 5_000 });
+          }
           swapDetails.restoredAtSeconds = (Date.now() - recordingStartedAt) / 1000;
           swapDetails.restoredPlayback = await getPlaybackSnapshot();
           if (typeof combination.expectedRestoredPlaybackRate === "number") {

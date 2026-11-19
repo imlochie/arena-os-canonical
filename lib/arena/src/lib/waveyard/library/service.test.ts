@@ -24,8 +24,18 @@ import { fileURLToPath } from "node:url";
 import { and, asc, eq, or } from "drizzle-orm";
 import { checksumFile, probeAudio } from "@workspace/arena/lib/waveyard/audio";
 import { requireTool } from "@workspace/arena/lib/waveyard/ffmpeg";
+import {
+  ANALYSIS_PCM_RATE,
+  decodeMonoPcm,
+  detectVocalPitchFrames,
+} from "../worker-local/analysis-engine";
 import { DESKTOP_ANALYSIS_ENGINE_VERSION } from "../types/analysis-provenance";
-import { LOCAL_VOCAL_ANALYSIS_ENGINE, LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION } from "../types/vocal-analysis";
+import {
+  LOCAL_VOCAL_ANALYSIS_ENGINE,
+  LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+  normaliseVocalPitchFrames,
+  segmentVocalPhrases,
+} from "../types/vocal-analysis";
 import { LOCAL_DRUM_ANALYSIS_ENGINE, LOCAL_DRUM_ANALYSIS_ENGINE_VERSION } from "../types/drum-analysis";
 import { getStorage } from "../storage";
 import { createAudioBackupCsv, createVerifiedAudioBackupZip } from "./audio-backup";
@@ -4439,7 +4449,7 @@ test("live session controls remain usable during real four-model separation", {
 // Reuses the exact already-separated, checksum-pinned September/Queen stems.
 // This does not rerun separation; it proves the current session -> Studio ->
 // PostgreSQL -> local export path and preserves the low-confidence fallback.
-test("real September vocals over the Queen bed persist and export with honest native fallback", {
+test("a real analyzed September vocal phrase persists through the Queen-bed export", {
   skip: process.env.WAVEYARD_REAL_SESSION_STEM_ACCEPTANCE !== "1",
   timeout: 360_000,
 }, async t => {
@@ -4621,6 +4631,18 @@ test("real September vocals over the Queen bed persist and export with honest na
     score: 0.004015682898264264,
     toleranceMs: 90,
   });
+  const vocalStemPath = path.join(repoRoot, manifest.vocals.stems.vocals);
+  const vocalPcm = await decodeMonoPcm(vocalStemPath);
+  const vocalDurationMs = Math.floor(vocalPcm.length * 1_000 / ANALYSIS_PCM_RATE);
+  const vocalFrames = normaliseVocalPitchFrames(
+    detectVocalPitchFrames(vocalPcm),
+    vocalDurationMs,
+  );
+  assert.ok(vocalFrames, "the exact checksum-pinned September vocal WAV produces validated pitch frames");
+  const selectedVocalPhrase = segmentVocalPhrases(vocalFrames)
+    .find(phrase => phrase.confidence >= 0.8 && phrase.endMs - phrase.startMs >= 1_000);
+  assert.ok(selectedVocalPhrase,
+    "the existing real September stem has a sustained, measured voiced-run entry for the persisted cue");
 
   const session = await sessionService.createSession(routeOwner, "Real September vocals over Queen bed");
   const sessionDetail = await sessionService.addTrackToSession({
@@ -4637,9 +4659,9 @@ test("real September vocals over the Queen bed persist and export with honest na
     toTrackId: vocals.id,
     toStemAssetId: vocals.stemIds.get("vocals"),
     atSeconds: 0,
-    // This is the previous full-track planner's selected entry, carried as an
-    // explicit cue; it is not asserted to be a musically ideal vocal phrase.
-    donorEntryOffsetMs: 19_044,
+    // Persist a start returned by Waveyard's production detector on the real
+    // vocal WAV. This is a voiced-run candidate, not a lyric or section label.
+    donorEntryOffsetMs: selectedVocalPhrase.startMs,
   });
   const handoff = await sessionService.sendSessionToStudio(routeOwner, session.id, [sessionTrackId]);
   assert.equal(handoff.preservedSwapCount, 1);
@@ -4666,7 +4688,8 @@ test("real September vocals over the Queen bed persist and export with honest na
     .flatMap((track: { clips: Array<Record<string, unknown>> }) => track.clips)
     .find((clip: Record<string, unknown>) => clip.stemAssetId === vocals.stemIds.get("vocals"));
   assert.ok(persistedVocalClip);
-  assert.equal(persistedVocalClip.sourceOffsetMs, 19_044);
+  assert.equal(persistedVocalClip.sourceOffsetMs, selectedVocalPhrase.startMs,
+    "the exact detector-derived vocal phrase start survives session save and Studio reopen");
   assert.equal(persistedVocalClip.tempoSyncEnabled, false);
   assert.equal(persistedVocalClip.keySyncEnabled, false);
 
@@ -4728,7 +4751,13 @@ test("real September vocals over the Queen bed persist and export with honest na
       warnings: priorReport.plan.arrangement.warnings,
     },
     decisions: handoff.appliedTransforms,
+    selectedVocalPhrase: {
+      startMs: selectedVocalPhrase.startMs,
+      endMs: selectedVocalPhrase.endMs,
+      confidence: selectedVocalPhrase.confidence,
+      interpretation: "production pitch-continuity voiced-run candidate; not word alignment or semantic section",
+    },
     output: { durationSeconds: output.durationSeconds, sampleRate: output.sampleRate, channels: output.channels, checksumSha256: exportAsset.checksumSha256 },
-    qualityLimit: "real separated audio and production routes were used; this test does not assess listening quality or prove an ideal vocal phrase entry",
+    qualityLimit: "proves the measured source cue survives real session persistence, Studio reopen and export; does not prove lyric alignment, verse/chorus meaning or human-rated mix quality",
   }));
 });

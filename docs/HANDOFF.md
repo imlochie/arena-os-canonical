@@ -1,5 +1,55 @@
 # Arena handoff — read this first
 
+## Real vocal phrase snap and saved-cue acceptance — 2026-11-19
+
+Waveyard now has a verified real-stem vocal-entry result, followed by a separate
+database-backed persistence/export check. Both used the existing checksum-pinned
+September and Another One Bites the Dust separations; neither reran separation.
+
+In the Chromium `SessionExperience` run, Waveyard's production pitch-continuity
+detector reprocessed the two exact vocal WAVs (65 September and 88 Queen
+voiced-run candidates; these are not words or semantic phrases). The session
+used Queen drums as its tempo master and the donor vocals were manually snapped
+to Queen's measured 25,263 ms voiced-run start (detector confidence 0.879312).
+The actual tempo-stretched donor vocal source began at 22.139 s in the prepared
+buffer, versus 22.038 s expected from the selected source cue and 0.872342 tempo
+ratio: **101 ms error**. The original September vocal gate reached zero, Queen
+vocals became audible, and September's bass and other stem kept playing at the
+same 0.872342 rate. Its drums were separately muted by the Queen drum swap; that
+donor remained active as the tempo master. Restoring vocals stopped the selected
+voice donor while the separate Queen drum donor remained active. The browser
+trace records about 1.42 s from applying the warmed vocal choice to audible
+playback; the tempo-matched preparation itself took 11.73 s and was completed
+before apply.
+
+The existing browser assertion had treated every newly created donor source as
+though it belonged to the vocal swap. That was false when a distinct drum master
+was preloaded; the check now tags and verifies the selected vocal source
+separately and confirms the drum role survives vocal restore.
+
+The separate real PostgreSQL acceptance then decoded the pinned September vocal
+stem through the same production detector, selected a sustained measured
+19,336–20,623 ms voiced run, saved that cue in a live session, handed the session
+to Studio, reopened it through the remix route, and confirmed the exact
+19,336 ms source offset remained on the vocal clip. The production export worker
+completed a full 222.673 s, 44.1 kHz stereo WAV (SHA-256
+`bfd22adda11be1d519db66451df932b8c717ad106fd834cfb2e80fd059cc3f8f`). The
+Queen bed's BPM and key remain below the trusted transformation threshold, so
+the persistence/export run correctly applied no tempo or key change.
+
+The playable browser capture and its measured JSON report are in
+`generated-artifacts/waveyard-real-world-acceptance/full-vocal-phrase-snap-live-restored/`;
+the real PostgreSQL export remains in ignored test storage. The live browser
+session uses fixture-backed API state, while the separate export test uses the
+real database and production session, Studio, and export services.
+
+**Limit:** This proves one manually selected acoustic voiced-run snap, one
+cross-tempo vocal swap with a drum master, role-specific restore, and a
+detector-derived cue surviving a real database/Studio/export path. It does not
+prove lyric/word alignment, verse/chorus recognition, human-rated sound quality,
+or arbitrary-pair mashup quality. The measured voiced-run start is coarse audio
+evidence, not a certified lyric boundary.
+
 ## Current full-length real-stem replay — 2026-11-19
 
 Reran the existing September-host / Another One Bites the Dust drum-swap
