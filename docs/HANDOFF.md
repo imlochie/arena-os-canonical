@@ -1,5 +1,36 @@
 # Arena handoff — read this first
 
+## Current full-length real-stem replay — 2026-11-19
+
+Reran the existing September-host / Another One Bites the Dust drum-swap
+acceptance against the exact four-stem WAVs in
+`generated-artifacts/waveyard-real-world-acceptance/`, using the current
+`agent-a-waveyard-donor-stem-integrity` checkout at `13838b89`. This exercises
+the production `SessionExperience` browser audio graph in Chromium 155; its
+session API is fixture-backed, so it is playback/live-control evidence, not a
+database or saved-project acceptance run.
+
+**Passed on the real audio:** the donor drums were transformed to the measured
+0.872342 tempo ratio while the host vocals, bass, and other stem continued at
+the same rate. The host's checksum-pinned 19.2–20.05 second drum break remained
+audible as a break: donor RMS was at most 0.00000651 during the sampled quiet
+interval, then recovered to 0.00679 after the host drum activity returned.
+The warmed replacement became audible 649 ms after selection; the tempo-matched
+buffer had already taken 4.68 seconds to prepare and was reused. Restoring the
+host returned all four channels to 1× playback and aligned their media clocks
+within 25 microseconds in this run.
+
+The exact browser capture and its measured report are preserved in
+`generated-artifacts/waveyard-real-world-acceptance/waveyard-current-13838b89-live-replay/`.
+The swap capture is stereo Opus/WebM and can be auditioned directly.
+
+**Limits:** this is one real pair, one drum role, one Linux Chromium run, and an
+objective playback-control check. It does not establish human-rated quality,
+vocal placement, semantic section recognition, database save/reopen/export, or
+reliability across arbitrary song pairs. The test script exited 0 with
+`PASS: real separated audio played and live-swapped through Waveyard SessionExperience`;
+no audio was regenerated or re-separated.
+
 ## Latest increment: low-confidence section timing can use verified drums
 
 Waveyard's persisted section worker now keeps a trusted full-mix beat grid, but
