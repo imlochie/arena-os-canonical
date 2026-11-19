@@ -1094,6 +1094,11 @@ export default function LiveStemSwapPicker({
                 </p>
               ) : entryCandidates.length > 0 ? (
                 <div className="wy-vocal-entry-candidate-list" role="radiogroup" aria-label="Measured donor entry alternatives">
+                  {entryCandidates.every((candidate) => !candidate.automaticEligible) && (
+                    <p className="wy-vocal-entry-no-candidates" role="status">
+                      No high-confidence music match was found. These vocal timing leads are audition-only: rhythm, harmony, or duration evidence does not meet the verified-match threshold. They are never selected automatically, and no automatic pitch correction is applied.
+                    </p>
+                  )}
                   {entryCandidates.map((candidate, index) => (
                     <button
                       key={`${candidate.donorSectionIndex}-${candidate.donorWindowStartMs}-${index}`}
@@ -1110,6 +1115,11 @@ export default function LiveStemSwapPicker({
                       }}
                     >
                       <strong>Alternative {index + 1} · donor entry {formatEntryTime(candidate.donorEntryMs)}</strong>
+                      <small>
+                        {candidate.automaticEligible
+                          ? "Measured music match · eligible for automatic entry"
+                          : `Audition only · ${candidate.auditionOnlyReason ?? "music fit is not verified"} · not auto-selected`}
+                      </small>
                       <small>
                         {candidate.basis === "rhythm-harmony-phrase"
                           ? `Matched ${formatEntryTime(candidate.donorWindowStartMs)}–${formatEntryTime(candidate.donorWindowEndMs)} rolling audio window`

@@ -20,3 +20,9 @@ For vocal replacements, a recipient stem's RMS is only a warning signal: it cann
 **Why:** Quiet vocal stems can leave the original voice audible elsewhere, while sparse and instrumental passages can look quiet for valid reasons.
 
 **How to apply:** Read pre-fader source-level energy without changing the playhead or mix, disclose uncertainty before the user selects a donor, and validate any future voice-leak detector against real separated audio with manually checked references.
+
+If a vocal entry has valid local timing evidence but fails rhythm, harmony, or duration fit, it may appear only as an explicitly audition-only lead. Keep it out of automatic entry and persisted alignment, state why it failed, and do not apply an inferred pitch correction.
+
+**Why:** A useful manual lead is not proof of compatibility; promoting a weak fit to automatic behavior can make a swap sound worse while disguising the evidence gap.
+
+**How to apply:** Test that low-fit vocal candidates remain selectable for deliberate listening, that automatic selection returns no such candidate, and that missing/conflicting provenance still produces no lead.

@@ -1110,7 +1110,8 @@ function livePhraseSectionAlignmentCandidates(
       const stretchedDonorDurationMs = (donorWindowEndMs - donorWindowStartMs) * stretchRatio;
       const durationSimilarity = Math.min(recipientDurationMs, stretchedDonorDurationMs)
         / Math.max(recipientDurationMs, stretchedDonorDurationMs);
-      if (durationSimilarity < LIVE_STEM_PHRASE_DURATION_SIMILARITY_MIN) continue;
+      if (durationSimilarity < LIVE_STEM_PHRASE_DURATION_SIMILARITY_MIN
+        && (evidence.stemType !== "vocals" || durationSimilarity < LIVE_VOCAL_AUDITION_DURATION_SIMILARITY_MIN)) continue;
 
       const similarity = comparePassageWindowSimilarity({
         anchor: recipientWindow,
@@ -1119,11 +1120,27 @@ function livePhraseSectionAlignmentCandidates(
         donorKeyTrusted,
         expectedKeyShift,
       });
-      if (similarity.rhythmSimilarity === null
-        || similarity.harmonySimilarity === null
-        || similarity.rhythmSimilarity < PASSAGE_MATCH_SIMILARITY_THRESHOLD
-        || similarity.harmonySimilarity < PASSAGE_MATCH_SIMILARITY_THRESHOLD
-        || !similarity.harmonicShiftAllowed) continue;
+      if (similarity.rhythmSimilarity === null || similarity.harmonySimilarity === null) continue;
+      const automaticEligible = similarity.rhythmSimilarity >= PASSAGE_MATCH_SIMILARITY_THRESHOLD
+        && similarity.harmonySimilarity >= PASSAGE_MATCH_SIMILARITY_THRESHOLD
+        && similarity.harmonicShiftAllowed
+        && durationSimilarity >= LIVE_STEM_PHRASE_DURATION_SIMILARITY_MIN;
+      const auditionOnlyReasons: string[] = [];
+      if (similarity.rhythmSimilarity < PASSAGE_MATCH_SIMILARITY_THRESHOLD)
+        auditionOnlyReasons.push("rhythm fit is below the verified-match threshold");
+      if (similarity.harmonySimilarity < PASSAGE_MATCH_SIMILARITY_THRESHOLD)
+        auditionOnlyReasons.push("harmony fit is below the verified-match threshold");
+      if (!similarity.harmonicShiftAllowed)
+        auditionOnlyReasons.push("a required pitch shift is not authorized by trusted key evidence");
+      if (durationSimilarity < LIVE_STEM_PHRASE_DURATION_SIMILARITY_MIN)
+        auditionOnlyReasons.push("the windows drift at the current tempo");
+      if (!automaticEligible) {
+        // A human may audition a vocal entry lead, but low confidence must not
+        // masquerade as an automatic match or alter the live mix silently.
+        if (evidence.stemType !== "vocals"
+          || similarity.rhythmSimilarity < LIVE_VOCAL_AUDITION_RHYTHM_SIMILARITY_MIN
+          || durationSimilarity < LIVE_VOCAL_AUDITION_DURATION_SIMILARITY_MIN) continue;
+      }
 
       const score = (similarity.rhythmSimilarity + similarity.harmonySimilarity) / 2 * durationSimilarity;
       const vocalTiming = compareVocalOnsetTiming({
@@ -1192,6 +1209,8 @@ function livePhraseSectionAlignmentCandidates(
         offsetSeconds,
         stretchRatio,
         donorEntryMs,
+        automaticEligible,
+        auditionOnlyReason: automaticEligible ? null : auditionOnlyReasons.join("; "),
         basis: "rhythm-harmony-phrase",
         donorSectionIndex: donorSection.sectionIndex,
         recipientSectionIndex: recipient.sectionIndex,
@@ -1225,7 +1244,8 @@ function livePhraseSectionAlignmentCandidates(
     }
   }
   matches.sort((left, right) =>
-    right.rankingScore - left.rankingScore
+    Number(right.automaticEligible) - Number(left.automaticEligible)
+      || right.rankingScore - left.rankingScore
       || (evidence?.stemType === "vocals"
         ? (right.vocalPhraseShapeSimilarity ?? -1) - (left.vocalPhraseShapeSimilarity ?? -1)
         : 0)
@@ -1252,9 +1272,9 @@ function livePhraseSectionAlignmentCandidates(
 /**
  * Prefer checksum-verified local phrase windows with matching rhythm, chroma,
  * and post-stretch duration. This is evidence of similar local audio, not a
- * semantic section label. Legacy role matching remains for sources without
- * fingerprints; incomplete/conflicting fingerprint evidence returns null so
- * the caller can use verified beat-phase alignment.
+ * semantic section label. Strict matches may drive automatic alignment;
+ * measured vocal timing leads that fail those gates are returned for explicit
+ * audition only. Incomplete/conflicting evidence is never promoted to a fit.
  */
 export type LiveStemSectionAlignmentBasis =
   | "rhythm-harmony-phrase"
@@ -1353,6 +1373,9 @@ export type LiveStemSectionAlignmentCandidate = {
   offsetSeconds: number;
   stretchRatio: number;
   donorEntryMs: number;
+  /** Only strict music-window matches may be selected automatically. */
+  automaticEligible: boolean;
+  auditionOnlyReason: string | null;
   basis: LiveStemSectionAlignmentBasis;
   donorSectionIndex: number;
   recipientSectionIndex: number;
@@ -1384,6 +1407,8 @@ export type LiveStemSectionAlignmentCandidate = {
 };
 
 const MAX_LIVE_STEM_ALIGNMENT_CANDIDATES = 5;
+const LIVE_VOCAL_AUDITION_RHYTHM_SIMILARITY_MIN = 0.3;
+const LIVE_VOCAL_AUDITION_DURATION_SIMILARITY_MIN = 0.8;
 
 /**
  * Returns distinct, source-verified alternatives at the current recipient
@@ -1488,6 +1513,8 @@ export function liveStemSectionAlignmentCandidates(
       offsetSeconds,
       stretchRatio,
       donorEntryMs,
+      automaticEligible: true,
+      auditionOnlyReason: null,
       basis: "trusted-section-role" as const,
       donorSectionIndex: candidate.sectionIndex,
       recipientSectionIndex: recipient.sectionIndex,
@@ -1550,6 +1577,7 @@ export function liveStemAutomaticEntryChoice(
   currentStretchRatio: number,
 ): LiveStemSectionAlignmentCandidate | null {
   for (const candidate of candidates) {
+    if (!candidate.automaticEligible) continue;
     const donorEntryMs = liveStemCandidateDonorEntryMs(candidate, recipientPositionSeconds, currentStretchRatio);
     if (donorEntryMs !== null) return candidate;
   }
@@ -1570,7 +1598,7 @@ export function liveStemSectionAlignment(
     stretchRatio,
     evidence,
     1,
-  )[0];
+  ).find((entry) => entry.automaticEligible);
   return candidate ? { offsetSeconds: candidate.offsetSeconds, basis: candidate.basis } : null;
 }
 

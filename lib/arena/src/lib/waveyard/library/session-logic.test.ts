@@ -544,7 +544,8 @@ test("live stem mapping selects the strongest checksum-bound local rhythm and ha
   // with a 2-second offset.
   const offset = liveStemSectionOffsetSeconds([recipient], [donor], 5, stretchRatio, evidence);
   assert.ok(offset !== null && Math.abs(offset - 2) < 0.001);
-  assert.equal(liveStemSectionAlignment([recipient], [donor], 5, stretchRatio, evidence)?.basis, "rhythm-harmony-phrase");
+  const alignment = liveStemSectionAlignment([recipient], [donor], 5, stretchRatio, evidence);
+  assert.equal(alignment?.basis, "rhythm-harmony-phrase");
 });
 
 test("live stem entry alternatives expose distinct measured windows and their evidence", () => {
@@ -573,6 +574,7 @@ test("live stem entry alternatives expose distinct measured windows and their ev
 
   assert.equal(alternatives.length, 3, "overlapping four-beat hops collapse to distinct eight-beat windows");
   assert.ok(alternatives.every((candidate) => candidate.basis === "rhythm-harmony-phrase"));
+  assert.ok(alternatives.every((candidate) => candidate.automaticEligible && candidate.auditionOnlyReason === null));
   assert.deepEqual(alternatives.map((candidate) => candidate.donorWindowStartMs), [0, 8_000, 16_000]);
   assert.ok(alternatives.every((candidate) =>
     candidate.rhythmSimilarity !== null
@@ -789,6 +791,51 @@ test("vocal donor ranking uses voiced-run duration and rests after matched phras
   );
   assert.equal(withoutIntervals[0]?.donorWindowStartMs, 0,
     "unavailable interval extents do not manufacture a duration-based preference");
+});
+
+test("low-confidence vocal entry leads remain audition-only and never auto-apply", () => {
+  const checksum = "a".repeat(64);
+  const recipient = testLongSourceSection(checksum, [testRollingWindow(0, 0)]);
+  const donor = testLongSourceSection("b".repeat(64), [
+    testRollingWindow(0, 0, 3),
+    testRollingWindow(8, 0, 3),
+  ]);
+  const recipientBeatGridMs = Array.from({ length: 49 }, (_, index) => index * 500);
+  const donorBeatGridMs = Array.from({ length: 49 }, (_, index) => index * 550);
+  const evidence = testLiveStemEvidence({
+    stemType: "vocals",
+    recipientBeatGridMs,
+    donorBeatGridMs,
+    recipientKeyConfidence: 0.2,
+    donorKeyConfidence: 0.2,
+    recipientVoicedPhraseIntervals: [
+      { startMs: 500, endMs: 900, confidence: 0.9 },
+      { startMs: 1_500, endMs: 1_900, confidence: 0.9 },
+      { startMs: 2_500, endMs: 2_900, confidence: 0.9 },
+      { startMs: 3_500, endMs: 3_900, confidence: 0.9 },
+    ],
+    donorVoicedPhraseIntervals: [
+      { startMs: 500, endMs: 550, confidence: 0.9 },
+      { startMs: 1_500, endMs: 1_550, confidence: 0.9 },
+      { startMs: 2_500, endMs: 2_550, confidence: 0.9 },
+      { startMs: 3_500, endMs: 3_550, confidence: 0.9 },
+      { startMs: 4_900, endMs: 5_300, confidence: 0.9 },
+      { startMs: 5_900, endMs: 6_300, confidence: 0.9 },
+      { startMs: 6_900, endMs: 7_300, confidence: 0.9 },
+      { startMs: 7_900, endMs: 8_300, confidence: 0.9 },
+    ],
+  });
+
+  const candidates = liveStemSectionAlignmentCandidates([recipient], [donor], 1, 1, evidence);
+  assert.ok(candidates.length > 0, "measured timing leads remain available for a person to audition");
+  assert.ok(candidates.every((candidate) => !candidate.automaticEligible));
+  assert.match(candidates[0]?.auditionOnlyReason ?? "", /harmony fit is below/i);
+  assert.equal(candidates[0]?.donorWindowStartMs, 4_400,
+    "the longer donor vocal runs rank ahead of the same-entry short runs");
+  assert.equal(liveStemAutomaticEntryChoice(candidates, 1, 1), null,
+    "an uncertain harmonic pairing is never selected automatically");
+  assert.equal(liveStemSectionAlignment([recipient], [donor], 1, 1, evidence), null,
+    "persisted playback does not silently apply an audition-only lead");
 });
 
 test("live vocal alternatives rank beat-mapped phrase timing without replacing music evidence", () => {

@@ -1,6 +1,36 @@
 # Arena handoff — read this first
 
-## Latest increment: vocal swaps compare phrase duration and rests
+## Latest increment: uncertain vocal fits stay audition-only
+
+The live picker now keeps a useful manual path when rolling vocal timing evidence
+exists but the music-fit gates fail. It can show a few checksum-bound local
+timing leads only when rhythm evidence is measurable, rhythm similarity is at
+least 0.30, and current-tempo window duration similarity is at least 0.80.
+Each lead states which verified-match checks failed. These entries are never
+eligible for automatic entry selection or persisted automatic alignment, and the
+picker explicitly says no automatic pitch correction is applied. Strict
+rhythm/harmony/duration matches remain the only automatic candidates.
+
+Replayed the exact pinned full-length September/Queen sources and their existing
+separated vocal WAVs with current rolling-window fingerprints. The tracks yielded
+34/25 detected sections, 33/25 rolling-evidence sections, and 36/40 vocal
+activity intervals. At a manually matched tempo ratio of about 0.872, tested
+playheads produced no verified automatic match; some produced audition-only
+leads, with measured duration alignment but weak rhythm and harmony fit. Other
+playheads had no candidate because section evidence was insufficient. This is
+not proof of a good mashup, semantic verse/chorus recognition, or better audio.
+
+The private named-section editor remains in Studio; its user labels are not yet
+used to rank live-swap candidates. That is still an integration gap. Continue to
+keep human-marked labels separate from algorithm confidence.
+
+**Verification:** 74 focused session-logic tests pass, including a low-harmony
+vocal pairing that remains manually auditionable but is rejected by automatic
+selection and persisted alignment. The pinned real-audio replay produced only
+honestly labeled fallback leads and no automatic match. Workspace typechecks
+pass. No audio was regenerated or re-separated.
+
+## Previous increment: vocal swaps compare phrase duration and rests
 
 Session analysis now preserves the complete checksum-verified vocal activity
 and pitch-continuity intervals, including their end times; previously the live
