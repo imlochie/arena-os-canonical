@@ -25,7 +25,7 @@ import type { drizzle } from "drizzle-orm/node-postgres";
 import { db as defaultDb } from "@workspace/db";
 import {
   processingJobs, sourceAnalyses, sourceAssets, sourceSectionAnalyses, sourceSections, stemAssets,
-  vocalAnalyses, vocalActivityIntervals, vocalPhrases,
+  drumAnalyses, vocalAnalyses, vocalActivityIntervals, vocalPhrases,
 } from "@workspace/db/waveyardSchema";
 import { getStorage, type StorageProvider } from "@workspace/arena/lib/waveyard/storage";
 import { normalizeSourceSections, sourceSectionsAreValid } from "@workspace/arena/lib/waveyard/types/source-sections";
@@ -36,6 +36,10 @@ import {
   LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
   vocalAnalysisProvenanceReason,
 } from "@workspace/arena/lib/waveyard/types/vocal-analysis";
+import {
+  LOCAL_DRUM_ANALYSIS_ENGINE,
+  LOCAL_DRUM_ANALYSIS_ENGINE_VERSION,
+} from "@workspace/arena/lib/waveyard/types/drum-analysis";
 import type { SourceSectionAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
 import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "./analysis";
 import {
@@ -46,6 +50,7 @@ import {
   measureFormWindows,
 } from "./musical-form";
 import { ANALYSIS_PCM_RATE, decodeMonoPcm, onsetEnvelope } from "./analysis-engine";
+import { selectSectionBeatGrid } from "./section-beat-grid";
 import {
   buildPassageFingerprint,
   buildStemActivityProfile,
@@ -113,13 +118,16 @@ async function loadStemActivityProfiles(input: {
   decode: typeof decodeMonoPcm;
   temporaryDirectory: string;
   source: typeof sourceAssets.$inferSelect;
-  beatGridMs: number[];
+  sourceBeatGridMs: number[] | null;
+  sourceBeatConfidence: number | null;
   sourcePcm: Float32Array;
 }): Promise<{
   profiles: StemActivityProfile[];
   changes: StemActivityBoundaryChange[];
   vocalActivity: PassageVocalActivityEvidence | undefined;
   vocalPcm?: Float32Array;
+  beatGridMs: number[] | null;
+  beatConfidence: number | null;
 }> {
   const rows = await input.database
     .select({ stem: stemAssets, job: processingJobs })
@@ -135,13 +143,74 @@ async function loadStemActivityProfiles(input: {
     ))
     .orderBy(desc(processingJobs.completedAt), desc(stemAssets.createdAt));
   const latestCurrentJob = rows.find((row) => separationSourceChecksum(row.job.metadata) === input.source.checksumSha256)?.job;
-  if (!latestCurrentJob) return { profiles: [], changes: [], vocalActivity: undefined };
+  if (!latestCurrentJob) return {
+    profiles: [],
+    changes: [],
+    vocalActivity: undefined,
+    beatGridMs: input.sourceBeatGridMs,
+    beatConfidence: input.sourceBeatConfidence,
+  };
 
   const selected = new Map<string, typeof rows[number]["stem"]>();
   for (const row of rows) {
     if (row.job.id !== latestCurrentJob.id || row.stem.stemType.includes("/")) continue;
     if (!selected.has(row.stem.stemType)) selected.set(row.stem.stemType, row.stem);
     if (selected.size >= 8) break;
+  }
+
+  let isolatedDrumEvidence: {
+    bpm: number | null;
+    bpmConfidence: number | null;
+    beatGrid: unknown;
+    beatConfidence: number | null;
+  } | null = null;
+  const drumStem = selected.get("drums") ?? selected.get("percussion");
+  if (drumStem) {
+    const [drumAnalysis] = await input.database.select({
+      bpm: drumAnalyses.bpm,
+      bpmConfidence: drumAnalyses.bpmConfidence,
+      beatGrid: drumAnalyses.beatGrid,
+      beatConfidence: drumAnalyses.beatConfidence,
+    }).from(drumAnalyses).where(and(
+      eq(drumAnalyses.projectId, input.source.projectId),
+      eq(drumAnalyses.sourceAssetId, input.source.id),
+      eq(drumAnalyses.stemAssetId, drumStem.id),
+      eq(drumAnalyses.status, "complete"),
+      eq(drumAnalyses.analysisEngine, LOCAL_DRUM_ANALYSIS_ENGINE),
+      eq(drumAnalyses.analysisEngineVersion, LOCAL_DRUM_ANALYSIS_ENGINE_VERSION),
+      eq(drumAnalyses.sourceChecksumSha256, input.source.checksumSha256),
+      eq(drumAnalyses.stemChecksumSha256, drumStem.checksumSha256),
+    )).limit(1);
+    if (drumAnalysis?.beatGrid) {
+      try {
+        isolatedDrumEvidence = {
+          ...drumAnalysis,
+          beatGrid: JSON.parse(drumAnalysis.beatGrid),
+        };
+      } catch {
+        isolatedDrumEvidence = null;
+      }
+    }
+  }
+  const gridSelection = selectSectionBeatGrid({
+    sourceBeatGrid: input.sourceBeatGridMs,
+    sourceBeatConfidence: input.sourceBeatConfidence,
+    isolatedDrum: isolatedDrumEvidence,
+    durationMs: Math.floor((input.sourcePcm.length * 1000) / ANALYSIS_PCM_RATE),
+  });
+  if (!gridSelection) return {
+    profiles: [],
+    changes: [],
+    vocalActivity: undefined,
+    beatGridMs: null,
+    beatConfidence: null,
+  };
+  if (gridSelection.source === "isolated-drums") {
+    console.info("Waveyard used checksum-current isolated drum timing for low-confidence structure", {
+      sourceAssetId: input.source.id,
+      stemAssetId: drumStem?.id,
+      beatConfidence: gridSelection.beatConfidence,
+    });
   }
 
   const profiles: StemActivityProfile[] = [];
@@ -159,7 +228,7 @@ async function loadStemActivityProfiles(input: {
       const pcm = await input.decode(inputPath);
       const stemDurationMs = (pcm.length * 1000) / ANALYSIS_PCM_RATE;
       if (pcm.length < ANALYSIS_PCM_RATE * 8 || Math.abs(stemDurationMs - sourceDurationMs) > 500) continue;
-      const profile = buildStemActivityProfile(pcm, input.beatGridMs, {
+      const profile = buildStemActivityProfile(pcm, gridSelection.beatGridMs, {
         stemType: stem.stemType,
         stemAssetId: stem.id,
         separationJobId: latestCurrentJob.id,
@@ -247,7 +316,14 @@ async function loadStemActivityProfiles(input: {
       });
     }
   }
-  return { profiles, changes, vocalActivity, vocalPcm };
+  return {
+    profiles,
+    changes,
+    vocalActivity,
+    vocalPcm,
+    beatGridMs: gridSelection.beatGridMs,
+    beatConfidence: gridSelection.beatConfidence,
+  };
 }
 
 /** Local structural analysis uses source audio and optional verified stem PCM. */
@@ -282,13 +358,13 @@ export async function handleSectionAnalysisJob(
     .from(sourceAssets)
     .where(and(eq(sourceAssets.id, job.sourceAssetId), eq(sourceAssets.projectId, job.projectId)))
     .limit(1);
-  const beatGrid = analysis ? parseBeatGrid(analysis.beatGrid) : null;
-  if (!source || source.checksumSha256 !== job.sourceChecksumSha256 || !analysis || analysis.status !== "complete" || !beatGrid) {
+  const sourceBeatGrid = analysis ? parseBeatGrid(analysis.beatGrid) : null;
+  if (!source || source.checksumSha256 !== job.sourceChecksumSha256 || !analysis || analysis.status !== "complete") {
     await updateSectionAnalysis(database, job.id, {
       status: "unavailable",
       stage: "insufficient-analysis",
       errorCode: !source ? "source_missing" : "insufficient_analysis",
-      errorMessage: !source ? "Authorized source asset is missing." : "Structural analysis requires complete persisted beat-grid analysis.",
+      errorMessage: !source ? "Authorized source asset is missing." : "Structural analysis requires complete source analysis.",
       completedAt: new Date(),
     }, job.status);
     return;
@@ -327,9 +403,22 @@ export async function handleSectionAnalysisJob(
       decode,
       temporaryDirectory,
       source,
-      beatGridMs: beatGrid,
+      sourceBeatGridMs: sourceBeatGrid,
+      sourceBeatConfidence: currentBeatConfidence(analysis),
       sourcePcm: pcm,
     });
+    const beatGrid = stemActivity.beatGridMs;
+    if (!beatGrid) {
+      await updateSectionAnalysis(database, job.id, {
+        status: "unavailable",
+        stage: "insufficient-analysis",
+        errorCode: "beat_grid_unavailable",
+        errorMessage: "Structural analysis needs a usable source beat grid or a current, confidence-checked isolated-drum grid.",
+        analyzedAt: new Date(),
+        completedAt: new Date(),
+      }, "processing");
+      return;
+    }
     const candidates = desktopSectionCandidates(
       beatGrid,
       envelope,
@@ -372,7 +461,7 @@ export async function handleSectionAnalysisJob(
         startBeatIndex: candidate.startBeatIndex,
         endBeatIndex: candidate.endBeatIndex,
         beatGridMs: beatGrid,
-        beatConfidence: currentBeatConfidence(analysis),
+        beatConfidence: stemActivity.beatConfidence,
         envelope,
         frameMs,
         pcm,

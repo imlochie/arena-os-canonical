@@ -1,5 +1,46 @@
 # Arena handoff — read this first
 
+## Latest increment: low-confidence section timing can use verified drums
+
+Waveyard's persisted section worker now keeps a trusted full-mix beat grid, but
+when that grid is missing or below 0.5 confidence it can fall back to the
+isolated drum grid from the exact latest completed separation. The fallback
+requires the current drum-analysis engine/version and matching source and drum
+stem checksums, plus validated BPM, confidence, grid intervals, and duration.
+The selected grid is used consistently for stem activity profiles, structural
+boundaries, breakdown/form evidence, and passage fingerprints. The section
+engine version is now 1.17.0 so old results are not mistaken for this behavior.
+
+Persisted PGlite worker tests prove the worker stores source-time boundaries on
+the selected drum grid when the source grid is weak, retains a trusted source
+grid, and ignores a drum analysis tied to a stale source checksum. The code
+does not substitute drum timing merely because it is available.
+
+I also reran the current low-level whole-track form function against the exact
+existing September/Queen sources and their checksum-matched vocal stems, using
+the owner's provisional section notes only as a single-listener reference:
+
+* On **September**, raw verse/chorus predictions from the full-mix grid scored
+  84.0% exact-time accuracy over manually labelled verse/chorus time, with
+  58.6% coverage; verse/chorus F1 was 0.840/0.789. Using the archived isolated
+  drum grid scored 82.8% accuracy and 56.0% coverage; F1 was 0.846/0.802.
+  The small differences do not establish that either grid is generally better.
+* On **Another One Bites the Dust**, the current full-mix grid had 0 confidence;
+  the exact separated drum grid measured 109.957 BPM, 0.737 tempo confidence,
+  and 0.740 beat confidence. The form function still produced zero
+  verse/chorus labels with either grid. The missing evidence is semantic
+  recurrence/phrase structure, not just a better beat clock.
+
+Those percentages are a raw form-function experiment, not an end-to-end
+persisted-route result or independent annotation study. They differ from the
+older 1.16 persisted-capture metrics below and must not be presented as
+acceptance accuracy. No music files were regenerated or re-separated.
+
+**Verification:** 13 focused section-grid and persisted-worker tests pass;
+workspace typechecks pass. This increment improves the timing evidence
+available to section analysis; it does not prove verse/chorus recognition,
+live-swap adaptation, or listenable mashup quality.
+
 ## Latest increment: uncertain vocal fits stay audition-only
 
 The live picker now keeps a useful manual path when rolling vocal timing evidence

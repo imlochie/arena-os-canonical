@@ -10,7 +10,7 @@ export const DESKTOP_HARMONY_ANALYSIS_ENGINE_VERSION = "1.1.0";
 export const DESKTOP_VOCAL_ANALYSIS_ENGINE_VERSION = "1.2.0";
 export const DESKTOP_SECTION_ENGINE = "arena-js-structure";
 // 1.16 adds sustained isolated-stem spectral-shape and sampled-flux evidence.
-export const DESKTOP_SECTION_ENGINE_VERSION = "1.16.0";
+export const DESKTOP_SECTION_ENGINE_VERSION = "1.17.0";
 
 export function isStaleDesktopAnalysis(analysis: {
   analysisEngine: string | null;

@@ -9,6 +9,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 
 import {
+  drumAnalyses,
   processingJobs,
   projects,
   sourceAnalyses,
@@ -25,6 +26,10 @@ import type { SourceSectionAnalysisJobPayload } from "@workspace/arena/lib/wavey
 import { displaySourceSectionLabel } from "../types/source-sections";
 import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "../types/analysis-provenance";
 import { parsePassageFingerprint } from "../types/passage-compatibility";
+import {
+  LOCAL_DRUM_ANALYSIS_ENGINE,
+  LOCAL_DRUM_ANALYSIS_ENGINE_VERSION,
+} from "../types/drum-analysis";
 import {
   LOCAL_VOCAL_ANALYSIS_ENGINE,
   LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
@@ -48,7 +53,7 @@ function signal(amplitudeAtBar: (bar: number) => number) {
   return pcm;
 }
 
-async function createFixture(currentSourceProvenance: boolean) {
+async function createFixture(currentSourceProvenance: boolean, sourceBeatConfidence = 0.9) {
   const client = new PGlite();
   const arenaRoot = fileURLToPath(new URL("../../../../", import.meta.url));
   await applyDesktopMigrationsToPGlite(client, join(arenaRoot, "desktop-migrations"));
@@ -78,7 +83,7 @@ async function createFixture(currentSourceProvenance: boolean) {
     analysisEngineVersion: "1.4.0",
     sourceChecksumSha256: source.checksumSha256,
     beatGrid: JSON.stringify(beatGrid),
-    beatConfidence: 0.9,
+    beatConfidence: sourceBeatConfidence,
   }).returning();
   const [sectionAnalysis] = await database.insert(sourceSectionAnalyses).values({
     projectId: project.id,
@@ -131,6 +136,47 @@ async function createFixture(currentSourceProvenance: boolean) {
   };
 
   return { client, database, source, stem, analysis, sectionAnalysis, payload };
+}
+
+async function addDrumTimingEvidence(
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+  options: { sourceChecksumSha256?: string; stemChecksumSha256?: string; stemType?: "drums" | "percussion" } = {},
+) {
+  const [drumStem] = await fixture.database.insert(stemAssets).values({
+    projectId: fixture.source.projectId,
+    sourceAssetId: fixture.source.id,
+    separationJobId: fixture.stem.separationJobId,
+    stemType: options.stemType ?? "drums",
+    engine: "test",
+    model: "test-separation",
+    modelVersion: "test",
+    storageKey: "drum-key",
+    checksumSha256: stemChecksum,
+    durationSeconds: 32,
+    sampleRate: 44_100,
+    channels: 2,
+    codec: "pcm_s16le",
+    format: "wav",
+    fileSizeBytes: ANALYSIS_PCM_RATE * 32 * 2,
+  }).returning();
+  const drumGrid = Array.from({ length: 65 }, (_, index) => 50 + index * 490);
+  await fixture.database.insert(drumAnalyses).values({
+    projectId: fixture.source.projectId,
+    sourceAssetId: fixture.source.id,
+    stemAssetId: drumStem!.id,
+    status: "complete",
+    stage: "complete",
+    idempotencyKey: `drums:${drumStem!.id}:${randomUUID()}`,
+    analysisEngine: LOCAL_DRUM_ANALYSIS_ENGINE,
+    analysisEngineVersion: LOCAL_DRUM_ANALYSIS_ENGINE_VERSION,
+    sourceChecksumSha256: options.sourceChecksumSha256 ?? fixture.source.checksumSha256!,
+    stemChecksumSha256: options.stemChecksumSha256 ?? drumStem!.checksumSha256,
+    bpm: 122.449,
+    bpmConfidence: 0.9,
+    beatGrid: JSON.stringify(drumGrid),
+    beatConfidence: 0.9,
+  });
+  return drumGrid;
 }
 
 function fixtureStorage(invalidKey?: string): StorageProvider {
@@ -266,6 +312,62 @@ test("persisted section analysis carries a four-stem breakdown signature into se
       assert.equal(persistedDrums.separationJobId, fixture.stem.separationJobId);
       assert.equal(persistedDrums.relativeRmsByBeat.length, 8);
     }
+  } finally {
+    await fixture.client.close();
+  }
+});
+
+test("persisted structure uses current isolated-drum timing when the source grid is low-confidence", async () => {
+  const fixture = await createFixture(true, 0.2);
+  try {
+    const drumGrid = await addDrumTimingEvidence(fixture);
+    await runSectionAnalysis(fixture, fixtureStorage(), {
+      "stem-key": signal((bar) => bar < 4 ? 0.02 : 0.16),
+      "drum-key": signal((bar) => bar % 2 === 0 ? 0.04 : 0.1),
+    });
+    const sections = await fixture.database.select().from(sourceSections)
+      .where(eq(sourceSections.sourceAssetId, fixture.source.id))
+      .orderBy(sourceSections.sectionIndex);
+    assert.ok(sections.length > 0, "the persisted source still receives conservative sections");
+    assert.ok(sections.some((section) =>
+      section.startMs === drumGrid[section.startBeatIndex]
+      && section.startMs !== beatGrid[section.startBeatIndex]),
+    "saved source-time boundaries use the isolated-drums grid rather than the low-confidence source grid");
+  } finally {
+    await fixture.client.close();
+  }
+});
+
+test("persisted structure accepts the canonical percussion role as its drum clock", async () => {
+  const fixture = await createFixture(true, 0.2);
+  try {
+    const percussionGrid = await addDrumTimingEvidence(fixture, { stemType: "percussion" });
+    await runSectionAnalysis(fixture);
+    const sections = await fixture.database.select().from(sourceSections)
+      .where(eq(sourceSections.sourceAssetId, fixture.source.id))
+      .orderBy(sourceSections.sectionIndex);
+    assert.ok(sections.length > 0);
+    assert.ok(sections.some((section) =>
+      section.startMs === percussionGrid[section.startBeatIndex]
+      && section.startMs !== beatGrid[section.startBeatIndex]),
+    "the worker accepts the supported percussion role without changing source-time coordinates");
+  } finally {
+    await fixture.client.close();
+  }
+});
+
+test("persisted structure ignores isolated-drum timing from a stale source checksum", async () => {
+  const fixture = await createFixture(true, 0.2);
+  try {
+    await addDrumTimingEvidence(fixture, { sourceChecksumSha256: "c".repeat(64) });
+    await runSectionAnalysis(fixture);
+    const sections = await fixture.database.select().from(sourceSections)
+      .where(eq(sourceSections.sourceAssetId, fixture.source.id))
+      .orderBy(sourceSections.sectionIndex);
+    assert.ok(sections.length > 0, "the usable low-confidence source grid remains the fallback");
+    assert.ok(sections.every((section) => section.startMs === beatGrid[section.startBeatIndex]
+      && section.endMs === beatGrid[section.endBeatIndex]),
+    "no boundary is aligned to a drum analysis whose source provenance is stale");
   } finally {
     await fixture.client.close();
   }
