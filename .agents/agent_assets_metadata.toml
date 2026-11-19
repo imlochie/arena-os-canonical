@@ -434,3 +434,17 @@ mtime_ms = 1795079422322
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/6597d04e-9142-4349-8396-f37c4bc1e13c/5f6c17fe-b1f8-4242-9923-f74a4e62a089"
 storage_version_token = "1795079506797208"
 content_type = "video/webm"
+
+[[outputs]]
+id = "eJQ8oe-FvkLan2Z1IByNi"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/full-vocal-phrase-snap-live-restored/september-vocals-phrase-snap-swap.webm"
+type = "video"
+title = "Live vocal phrase snap demo"
+description = "25-second browser capture of Queen vocals snapped to a measured voiced run in a live tempo-matched session; the vocal donor is then restored while the separate Queen drum donor stays active. This proves timing and role handling, not subjective mix quality."
+logical_id = "a4cc4bdc-8c9a-4634-88a5-b61d1ad29ca2"
+content_hash = "sha256:1e76acba91ddd8c6169ab2d0c803e033c0870ef6e03e94f99c5bd0413654bdd9"
+size = 336222
+mtime_ms = 1795118186617
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/a4cc4bdc-8c9a-4634-88a5-b61d1ad29ca2/46f675e2-6f93-44a4-a019-daf42e228e42"
+storage_version_token = "1795118629747692"
+content_type = "video/webm"
