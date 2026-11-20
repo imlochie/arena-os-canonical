@@ -448,3 +448,31 @@ mtime_ms = 1795118186617
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/a4cc4bdc-8c9a-4634-88a5-b61d1ad29ca2/46f675e2-6f93-44a4-a019-daf42e228e42"
 storage_version_token = "1795118629747692"
 content_type = "video/webm"
+
+[[outputs]]
+id = "tCM7DUqvk4_GwVi6sgjdL"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/deliverable/september-vocals-over-queen-bed-preview.mp4"
+type = "video"
+title = "Waveyard mix preview — visible waveform and audio"
+description = "A 45-second video preview with the actual rendered audio and an animated waveform. This is a waveform visualization, not a recording of the app interface."
+logical_id = "c2ad7fdd-f2ff-404e-bc51-10ca915e2b25"
+content_hash = "sha256:f76109211efffbae4ddd824d988800ef2fcd89e2217ba0fc98c92a678bc95c32"
+size = 3277498
+mtime_ms = 1795142293529
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/c2ad7fdd-f2ff-404e-bc51-10ca915e2b25/bddd94fc-bd6a-495b-87d6-d62418e5b343"
+storage_version_token = "1795142340289003"
+content_type = "video/mp4"
+
+[[outputs]]
+id = "YOmcygSEOuGhHDpSDllX-"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/deliverable/september-vocals-over-queen-bed.mp3"
+type = "audio"
+title = "Full Waveyard mix audio — 223 seconds"
+description = "The full existing September-vocals / Queen-bed render, loudness-normalized for playback. No stems were regenerated or re-separated."
+logical_id = "85905ad4-f6d0-419e-9da0-41fe763a37c7"
+content_hash = "sha256:258f36ef819863195d2275660f385f6004700a6a5060631fef26efc2d1cf803e"
+size = 5353389
+mtime_ms = 1795142132381
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/85905ad4-f6d0-419e-9da0-41fe763a37c7/0f3be08b-96d1-49ea-9f5a-3d052cebe778"
+storage_version_token = "1795142340955701"
+content_type = "audio/mpeg"
