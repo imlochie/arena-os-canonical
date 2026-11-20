@@ -103,3 +103,16 @@ recognition.
 **How to apply:** Evaluate changes against full-track human annotations and keep
 structural repetition separate from semantic labels until that evidence supports
 their connection.
+
+Never present a cached render as a current-engine demo. Bind each audition file
+to its planner version, exact source/stem hashes, and the arrangement that
+produced it; clearly label it when those inputs predate current code.
+
+**Why:** A stale planner-v11 render was mistaken for evidence of current
+full-length placement, and the owner heard the resulting timing and layering
+problems. A correct current code path is not proof that an older artifact used
+it.
+
+**How to apply:** Check the embedded plan/report provenance before sharing audio.
+If it is stale, rerun the exact pinned pair through the current production route
+or state explicitly that the current render has not been verified.
