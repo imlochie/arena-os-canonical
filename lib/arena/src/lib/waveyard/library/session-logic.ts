@@ -1121,27 +1121,6 @@ function livePhraseSectionAlignmentCandidates(
         expectedKeyShift,
       });
       if (similarity.rhythmSimilarity === null || similarity.harmonySimilarity === null) continue;
-      const automaticEligible = similarity.rhythmSimilarity >= PASSAGE_MATCH_SIMILARITY_THRESHOLD
-        && similarity.harmonySimilarity >= PASSAGE_MATCH_SIMILARITY_THRESHOLD
-        && similarity.harmonicShiftAllowed
-        && durationSimilarity >= LIVE_STEM_PHRASE_DURATION_SIMILARITY_MIN;
-      const auditionOnlyReasons: string[] = [];
-      if (similarity.rhythmSimilarity < PASSAGE_MATCH_SIMILARITY_THRESHOLD)
-        auditionOnlyReasons.push("rhythm fit is below the verified-match threshold");
-      if (similarity.harmonySimilarity < PASSAGE_MATCH_SIMILARITY_THRESHOLD)
-        auditionOnlyReasons.push("harmony fit is below the verified-match threshold");
-      if (!similarity.harmonicShiftAllowed)
-        auditionOnlyReasons.push("a required pitch shift is not authorized by trusted key evidence");
-      if (durationSimilarity < LIVE_STEM_PHRASE_DURATION_SIMILARITY_MIN)
-        auditionOnlyReasons.push("the windows drift at the current tempo");
-      if (!automaticEligible) {
-        // A human may audition a vocal entry lead, but low confidence must not
-        // masquerade as an automatic match or alter the live mix silently.
-        if (evidence.stemType !== "vocals"
-          || similarity.rhythmSimilarity < LIVE_VOCAL_AUDITION_RHYTHM_SIMILARITY_MIN
-          || durationSimilarity < LIVE_VOCAL_AUDITION_DURATION_SIMILARITY_MIN) continue;
-      }
-
       const score = (similarity.rhythmSimilarity + similarity.harmonySimilarity) / 2 * durationSimilarity;
       const vocalTiming = compareVocalOnsetTiming({
         recipientBeatGrid: recipientGrid,
@@ -1173,6 +1152,32 @@ function livePhraseSectionAlignmentCandidates(
           donorVocalActivityIntervals: evidence.donorVocalActivityIntervals,
         })
         : { vocalPhraseShapeSimilarity: null, vocalPhraseShapeBasis: null };
+      const vocalEvidenceAvailable = evidence.stemType !== "vocals"
+        || vocalTiming.vocalTimingSimilarity !== null
+        || vocalPhraseShape.vocalPhraseShapeSimilarity !== null;
+      const automaticEligible = similarity.rhythmSimilarity >= PASSAGE_MATCH_SIMILARITY_THRESHOLD
+        && similarity.harmonySimilarity >= PASSAGE_MATCH_SIMILARITY_THRESHOLD
+        && similarity.harmonicShiftAllowed
+        && durationSimilarity >= LIVE_STEM_PHRASE_DURATION_SIMILARITY_MIN
+        && vocalEvidenceAvailable;
+      const auditionOnlyReasons: string[] = [];
+      if (similarity.rhythmSimilarity < PASSAGE_MATCH_SIMILARITY_THRESHOLD)
+        auditionOnlyReasons.push("rhythm fit is below the verified-match threshold");
+      if (similarity.harmonySimilarity < PASSAGE_MATCH_SIMILARITY_THRESHOLD)
+        auditionOnlyReasons.push("harmony fit is below the verified-match threshold");
+      if (!similarity.harmonicShiftAllowed)
+        auditionOnlyReasons.push("a required pitch shift is not authorized by trusted key evidence");
+      if (durationSimilarity < LIVE_STEM_PHRASE_DURATION_SIMILARITY_MIN)
+        auditionOnlyReasons.push("the windows drift at the current tempo");
+      if (!vocalEvidenceAvailable)
+        auditionOnlyReasons.push("paired vocal phrase/activity timing is unavailable");
+      if (!automaticEligible) {
+        // A human may audition a vocal entry lead, but low confidence must not
+        // masquerade as an automatic match or alter the live mix silently.
+        if (evidence.stemType !== "vocals"
+          || similarity.rhythmSimilarity < LIVE_VOCAL_AUDITION_RHYTHM_SIMILARITY_MIN
+          || durationSimilarity < LIVE_VOCAL_AUDITION_DURATION_SIMILARITY_MIN) continue;
+      }
       // Vocal replacement is a lead-performance decision: once a candidate
       // passes the musical-window, duration, tempo and harmonic checks, measured
       // entry timing ranks first, followed by voiced-run/rest coverage. Other
@@ -1488,6 +1493,7 @@ export function liveStemSectionAlignmentCandidates(
   const recipientTrackEnd = recipientSections.at(-1)?.endBeatIndex ?? 0;
   const donorTrackEnd = donorSections.at(-1)?.endBeatIndex ?? 0;
   if (recipientTrackEnd <= 0 || donorTrackEnd <= 0) return [];
+  const vocalRoleOnly = evidence?.stemType === "vocals";
   const recipientPhase = recipient.startBeatIndex / recipientTrackEnd;
   const donors = donorSections
     .filter((candidate) => comparableSectionLabel(candidate.label) === role
@@ -1513,8 +1519,10 @@ export function liveStemSectionAlignmentCandidates(
       offsetSeconds,
       stretchRatio,
       donorEntryMs,
-      automaticEligible: true,
-      auditionOnlyReason: null,
+      automaticEligible: !vocalRoleOnly,
+      auditionOnlyReason: vocalRoleOnly
+        ? "Matching section labels are hypotheses, not proof of vocal phrase timing; audition this entry or choose a manual start."
+        : null,
       basis: "trusted-section-role" as const,
       donorSectionIndex: candidate.sectionIndex,
       recipientSectionIndex: recipient.sectionIndex,

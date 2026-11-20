@@ -471,6 +471,13 @@ test("live stem section phase aligns corresponding, structurally compatible sect
   assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 4, 1.1), 1.1);
   assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 12, 1.1), 1.9);
   assert.equal(liveStemSectionAlignment(recipient, donor, 4, 1.1)?.basis, "trusted-section-role");
+  const vocalRoleOnly = liveStemSectionAlignmentCandidates(recipient, donor, 4, 1.1, {
+    stemType: "vocals",
+  });
+  assert.ok(vocalRoleOnly.length > 0, "the user can still audition same-role section options");
+  assert.ok(vocalRoleOnly.every((candidate) => !candidate.automaticEligible
+    && candidate.auditionOnlyReason?.includes("do not verify vocal phrase timing")),
+  "section labels alone cannot auto-place a lead vocal");
 });
 
 test("live stem section mapping matches a confident role, not the same ordinal", () => {
@@ -902,6 +909,9 @@ test("live vocal alternatives rank beat-mapped phrase timing without replacing m
   assert.ok(withoutVocalTiming.every((candidate) =>
     candidate.vocalTimingSimilarity === null && candidate.vocalTimingBasis === null,
   ), "missing paired vocal evidence stays unavailable and does not fabricate a score");
+  assert.ok(withoutVocalTiming.every((candidate) => !candidate.automaticEligible
+    && candidate.auditionOnlyReason?.includes("paired vocal phrase/activity timing is unavailable")),
+  "musical-window similarity without vocal timing remains audition-only for lead vocals");
 
   const activityFallback = liveStemSectionAlignmentCandidates(
     [recipient],
