@@ -20,6 +20,22 @@ generic structural intervals rather than reliable verse/chorus labels. That
 acceptance did not complete; do not claim that the rejected pair produces a
 listenable result.
 
+## Vocal entry evidence gate — 2026-11-21
+
+Automatic live vocal entry now requires paired vocal phrase/onset timing or
+voiced-run/activity-shape evidence in addition to the existing music-window,
+tempo, duration and harmonic checks. If that vocal-specific evidence is absent,
+a candidate remains available for audition but is not selected automatically.
+Confident matching section labels alone are also audition-only for vocal swaps;
+they are hypotheses, not proof that the lead phrase will land naturally.
+Manual donor-start selection remains available.
+
+This is a conservative control on automatic placement, not a claim that the
+detector understands lyrics or musical form. The regression suite verifies both
+the fingerprint path without vocal timing and the section-label-only fallback
+stay out of automatic selection. It does not establish that the resulting
+real-song mix is listenable; the owner must still audition a viable pair.
+
 When the current planner has no rankable vocal-to-bed passage, Mashup Studio
 now says the available full-body render is an unverified timing fallback and
 offers a direct action to select that song's separated vocal in Analyze. The

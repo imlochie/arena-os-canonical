@@ -476,7 +476,7 @@ test("live stem section phase aligns corresponding, structurally compatible sect
   });
   assert.ok(vocalRoleOnly.length > 0, "the user can still audition same-role section options");
   assert.ok(vocalRoleOnly.every((candidate) => !candidate.automaticEligible
-    && candidate.auditionOnlyReason?.includes("do not verify vocal phrase timing")),
+    && candidate.auditionOnlyReason?.includes("not proof of vocal phrase timing")),
   "section labels alone cannot auto-place a lead vocal");
 });
 
@@ -903,7 +903,7 @@ test("live vocal alternatives rank beat-mapped phrase timing without replacing m
     [donor],
     5,
     5 / 6,
-    testLiveStemEvidence({ recipientBeatGridMs, donorBeatGridMs }),
+    testLiveStemEvidence({ recipientBeatGridMs, donorBeatGridMs, stemType: "vocals" }),
   );
   assert.ok(withoutVocalTiming.length > 0);
   assert.ok(withoutVocalTiming.every((candidate) =>
