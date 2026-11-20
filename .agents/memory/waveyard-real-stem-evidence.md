@@ -116,3 +116,13 @@ it.
 **How to apply:** Check the embedded plan/report provenance before sharing audio.
 If it is stale, rerun the exact pinned pair through the current production route
 or state explicitly that the current render has not been verified.
+
+Do not use the user's September / Another One Bites the Dust pair for mashup
+demos or quality benchmarks. The user reports Stem.fm will not load it and does
+not consider it a viable pairing.
+
+**Why:** A rejected pairing cannot distinguish Waveyard's mix quality from a
+source-compatibility failure, so it is not a useful positive acceptance case.
+
+**How to apply:** Choose real song pairs that Stem.fm accepts when comparing
+mashup quality, and do not return to this pair as a demo or benchmark.
