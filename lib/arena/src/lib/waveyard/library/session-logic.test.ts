@@ -861,6 +861,7 @@ test("live vocal alternatives rank beat-mapped phrase timing without replacing m
   const recipientBeatGridMs = Array.from({ length: 49 }, (_, index) => index * 500);
   const donorBeatGridMs = Array.from({ length: 49 }, (_, index) => index * 600);
   const evidence = testLiveStemEvidence({
+    stemType: "vocals",
     recipientBeatGridMs,
     donorBeatGridMs,
     recipientVoicedPhraseStartsMs: [
@@ -897,6 +898,10 @@ test("live vocal alternatives rank beat-mapped phrase timing without replacing m
     candidate.vocalTimingSimilarity === 0
     && candidate.vocalTimingBasis === "voiced-phrase",
   ));
+  assert.ok(candidates.filter((candidate) => candidate.vocalTimingSimilarity === 0)
+    .every((candidate) => !candidate.automaticEligible
+      && candidate.auditionOnlyReason?.includes("no aligned phrase or voiced coverage")),
+  "a measured absence of matching vocal timing cannot auto-apply");
 
   const withoutVocalTiming = liveStemSectionAlignmentCandidates(
     [recipient],

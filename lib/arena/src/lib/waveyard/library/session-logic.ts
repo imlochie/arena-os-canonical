@@ -1155,11 +1155,15 @@ function livePhraseSectionAlignmentCandidates(
       const vocalEvidenceAvailable = evidence.stemType !== "vocals"
         || vocalTiming.vocalTimingSimilarity !== null
         || vocalPhraseShape.vocalPhraseShapeSimilarity !== null;
+      const vocalAlignmentObserved = evidence.stemType !== "vocals"
+        || (vocalTiming.vocalTimingMatchedEvents ?? 0) > 0
+        || (vocalPhraseShape.vocalPhraseShapeSimilarity ?? 0) > 0;
       const automaticEligible = similarity.rhythmSimilarity >= PASSAGE_MATCH_SIMILARITY_THRESHOLD
         && similarity.harmonySimilarity >= PASSAGE_MATCH_SIMILARITY_THRESHOLD
         && similarity.harmonicShiftAllowed
         && durationSimilarity >= LIVE_STEM_PHRASE_DURATION_SIMILARITY_MIN
-        && vocalEvidenceAvailable;
+        && vocalEvidenceAvailable
+        && vocalAlignmentObserved;
       const auditionOnlyReasons: string[] = [];
       if (similarity.rhythmSimilarity < PASSAGE_MATCH_SIMILARITY_THRESHOLD)
         auditionOnlyReasons.push("rhythm fit is below the verified-match threshold");
@@ -1171,6 +1175,8 @@ function livePhraseSectionAlignmentCandidates(
         auditionOnlyReasons.push("the windows drift at the current tempo");
       if (!vocalEvidenceAvailable)
         auditionOnlyReasons.push("paired vocal phrase/activity timing is unavailable");
+      else if (!vocalAlignmentObserved)
+        auditionOnlyReasons.push("measured vocal timing shows no aligned phrase or voiced coverage");
       if (!automaticEligible) {
         // A human may audition a vocal entry lead, but low confidence must not
         // masquerade as an automatic match or alter the live mix silently.

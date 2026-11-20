@@ -26,6 +26,8 @@ Automatic live vocal entry now requires paired vocal phrase/onset timing or
 voiced-run/activity-shape evidence in addition to the existing music-window,
 tempo, duration and harmonic checks. If that vocal-specific evidence is absent,
 a candidate remains available for audition but is not selected automatically.
+If the measured vocal evidence reports no aligned phrase event and no voiced-run
+overlap, the candidate also remains audition-only.
 Confident matching section labels alone are also audition-only for vocal swaps;
 they are hypotheses, not proof that the lead phrase will land naturally.
 Manual donor-start selection remains available.
