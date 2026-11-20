@@ -1,5 +1,36 @@
 # Arena handoff — read this first
 
+## Current mashup fallback and listening feedback — 2026-11-20
+
+The last 45-second September-vocal/Queen-bed preview was rendered from a stale
+planner-v11 artifact, not from the current production route. Its report showed a
+single full-vocal overlay starting at zero and no ranked donor/bed passage pair.
+The owner heard the drums layering and the vocals out of time; that preview is
+not evidence of a successful current-engine mashup.
+
+The current route has checksum-validated isolated-drum timing and paired-grid
+alignment, but timing evidence alone does not prove section or phrase fit. A
+real reverse-direction route attempt also confirmed that the current Queen
+section analysis returns generic structural intervals rather than reliable
+verse/chorus labels. The reverse-direction acceptance did not complete, so do
+not claim that this pair now produces a listenable result.
+
+When the current planner has no rankable vocal-to-bed passage, Mashup Studio
+now says the available full-body render is an unverified timing fallback and
+offers a direct action to select that song's separated vocal in Analyze. The
+existing private manual-section editor and placement recommendations can then
+create ordinary editable Studio clips. This makes the previously hidden manual
+fallback reachable; it does not yet feed manual labels into the automatic
+full-length planner, and it does not fix residual percussion leakage in the
+separated `other` stem.
+
+**Verification:** ArenaForge typecheck and production build pass (the build
+prints existing sourcemap and large-chunk warnings). The web workflow restarted
+successfully. A screenshot showed the Studio landing page with no saved
+arrangement, so the conditional no-match control was not visually exercised.
+The exact reverse-direction persisted-route attempt failed before export, and a
+later full rerun timed out; there is no current-route audio-quality pass.
+
 ## Real vocal phrase snap and saved-cue acceptance — 2026-11-19
 
 Waveyard now has a verified real-stem vocal-entry result, followed by a separate

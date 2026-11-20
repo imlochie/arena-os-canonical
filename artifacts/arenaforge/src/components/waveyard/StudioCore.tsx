@@ -1429,7 +1429,21 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
       {source && !source.linkedFromLibrary && <HarmonyAnalysisPanel source={source} onRequestAnalysis={() => requestHarmonyAnalysis(source.id)} onExportMidi={() => requestMidiExport("harmony", source.id, selected.id)} />}
       <AIStudio projectId={projectId} />
       <GeneratedLayers projectId={projectId} canEdit />
-      <MashupStudio projectId={projectId} sources={sources} canEdit />
+      <MashupStudio
+        projectId={projectId}
+        sources={sources}
+        canEdit
+        onOpenManualVocalSections={(sourceAssetId) => {
+          const vocalStem = stems.filter((stem) =>
+            stem.sourceAssetId === sourceAssetId && stem.stemType === "vocals",
+          ).at(-1);
+          if (vocalStem) {
+            setSelectedId(vocalStem.id);
+            setSelectedSourceSectionId(null);
+          }
+          setStudioTab("analyze");
+        }}
+      />
     </>}
     {studioTab === "showcase" && <>
       <VisualizerStudio projectId={projectId} stems={stems} sources={sources} transport={transport} onControl={updateControl} />

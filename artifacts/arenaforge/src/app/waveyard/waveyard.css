@@ -981,6 +981,10 @@
 .mashup-passage-search>ol>li{padding:8px 10px;background:#0e110d;border:1px solid var(--line);border-radius:6px}
 .mashup-passage-search>ol>li>b,.mashup-passage-search>ol>li>small{display:block}
 .mashup-passage-search>ol>li>small{font-size:11px;color:var(--muted);margin-top:4px;line-height:1.45;overflow-wrap:anywhere}
+.mashup-manual-fallback{display:grid;gap:8px;margin-top:12px;padding:12px;border:1px solid color-mix(in srgb,var(--stem-vocals),transparent 55%);background:color-mix(in srgb,var(--stem-vocals),var(--panel-deep) 94%)}
+.mashup-manual-fallback>b{font-size:12px}
+.mashup-manual-fallback>p{margin:0;color:var(--muted);font-size:11px;line-height:1.5}
+.mashup-manual-fallback>.button{justify-self:start}
 .mashup-bed-alternatives{margin-top:7px;padding:7px 8px;background:#11150f;border-radius:5px}
 .mashup-bed-alternatives>summary{cursor:pointer;font-size:11px;color:var(--cyan)}
 .mashup-bed-alternatives>ol{padding-left:20px;display:grid;gap:6px}

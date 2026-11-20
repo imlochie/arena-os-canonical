@@ -164,7 +164,17 @@ function formatPassageTime(milliseconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-export function MashupStudio({ projectId, sources, canEdit }: { projectId: string; sources: Source[]; canEdit: boolean }) {
+export function MashupStudio({
+  projectId,
+  sources,
+  canEdit,
+  onOpenManualVocalSections,
+}: {
+  projectId: string;
+  sources: Source[];
+  canEdit: boolean;
+  onOpenManualVocalSections?: (sourceId: string) => void;
+}) {
   const [vocalsId, setVocalsId] = useState(sources[0]?.id ?? "");
   const [bedId, setBedId] = useState(sources[1]?.id ?? sources[0]?.id ?? "");
   const [plan, setPlan] = useState<Plan | null>(null);
@@ -960,6 +970,26 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
                 )}
             </details>
           )}
+          {canEdit
+            && plan.passageSearch
+            && (!plan.passageSearch.selectedDonorSectionId || !plan.passageSearch.selectedBedSectionId)
+            && onOpenManualVocalSections && (
+              <div className="notice mashup-manual-fallback" role="status" data-testid="mashup-manual-vocal-fallback">
+                <b>No measured vocal-to-bed passage was selected.</b>
+                <p>
+                  The available render is a full-body timing fallback, not a verified section fit.
+                  Mark a passage on the separated vocal and use Studio’s placement recommendations
+                  to add it as an editable clip.
+                </p>
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={() => onOpenManualVocalSections(vocalsId)}
+                >
+                  Mark this vocal’s sections
+                </button>
+              </div>
+            )}
           {plan.arrangement && (
             <details className="mashup-arrangement" data-testid="details-mashup-arrangement">
               <summary>
