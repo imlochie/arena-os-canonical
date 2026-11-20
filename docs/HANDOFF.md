@@ -2,18 +2,23 @@
 
 ## Current mashup fallback and listening feedback — 2026-11-20
 
-The last 45-second September-vocal/Queen-bed preview was rendered from a stale
-planner-v11 artifact, not from the current production route. Its report showed a
-single full-vocal overlay starting at zero and no ranked donor/bed passage pair.
-The owner heard the drums layering and the vocals out of time; that preview is
-not evidence of a successful current-engine mashup.
+The owner has ruled out the previously used song pair as a mashup demo because
+Stem.fm will not load it. Do not use it for new audio demonstrations or quality
+claims. Older references below remain historical audit notes, not acceptance
+criteria.
+
+The last 45-second preview of that pair was rendered from a stale planner-v11
+artifact, not from the current production route. Its report showed a single
+full-vocal overlay starting at zero and no ranked donor/bed passage pair. The
+owner heard the drums layering and the vocals out of time; that preview is not
+evidence of a successful current-engine mashup.
 
 The current route has checksum-validated isolated-drum timing and paired-grid
 alignment, but timing evidence alone does not prove section or phrase fit. A
-real reverse-direction route attempt also confirmed that the current Queen
-section analysis returns generic structural intervals rather than reliable
-verse/chorus labels. The reverse-direction acceptance did not complete, so do
-not claim that this pair now produces a listenable result.
+real reverse-direction route attempt also confirmed that the analysis returned
+generic structural intervals rather than reliable verse/chorus labels. That
+acceptance did not complete; do not claim that the rejected pair produces a
+listenable result.
 
 When the current planner has no rankable vocal-to-bed passage, Mashup Studio
 now says the available full-body render is an unverified timing fallback and
@@ -23,6 +28,27 @@ create ordinary editable Studio clips. This makes the previously hidden manual
 fallback reachable; it does not yet feed manual labels into the automatic
 full-length planner, and it does not fix residual percussion leakage in the
 separated `other` stem.
+
+## Vocal placement scoring correction — 2026-11-20
+
+The full-length placement scorer no longer gives drum/bass attack coincidences
+weight when deciding where to move the complete vocal body. Where a valid
+evidence-backed comparison exists, those coincidences remain visible as
+diagnostics, but a vocal onset landing near a kick or bass transient is not
+enough to establish phrase timing. Attack-only evidence no longer triggers an
+entry search. This removes the prior 35% transient-overlap scoring channel and
+bumps the planner identity to v14 so cached v13 plans are not mistaken for
+current results.
+The paired beat grids used by this path are source-analysis grids, not isolated
+drum-to-drum grids; do not describe them as direct evidence about a separated
+drum performance.
+
+**Verification:** A regression supplies attacks concentrated at a competing
+entry and confirms they cannot trigger an entry search; the continuous
+whole-body fallback remains unchanged. A separate paired-grid case verifies
+attack overlap remains visible but diagnostic-only. This is planner-safety
+evidence, not proof of a listenable real-song mix. No fresh audio was generated
+in this increment.
 
 **Verification:** ArenaForge typecheck and production build pass (the build
 prints existing sourcemap and large-chunk warnings). The web workflow restarted

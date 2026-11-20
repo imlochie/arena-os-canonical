@@ -88,34 +88,31 @@ function profile(overrides: Partial<MashupSourceProfile>): MashupSourceProfile {
 }
 
 test("plan: current persisted beat-grid fit can drive a tempo match when BPM autocorrelation is weak", () => {
-  // These figures mirror the full-track September/Another One Bites the Dust
-  // acceptance report: 126.048 BPM / .697 versus 109.957 BPM / .426, while
-  // their persisted combined beat confidences imply a .905 phase fit on the
-  // latter. The grid-derived interval is used only after current provenance is
-  // resolved by loadSourceProfile; this profile models that resolved evidence.
+  // Generic weak-donor/strong-bed evidence tests the tempo fallback rule; this
+  // is not a real-song or cross-source compatibility claim.
   const vocals = profile({
     role: "vocals",
-    bpm: 109.957,
-    bpmConfidence: 0.426,
-    beatConfidence: 0.642,
+    bpm: 100,
+    bpmConfidence: 0.42,
+    beatConfidence: 0.64,
     beatGridAlignmentConfidence: 0.906,
-    beatGridMs: Array.from({ length: 408 }, (_, index) => index * 546),
-    durationMs: 222_670,
+    beatGridMs: Array.from({ length: 401 }, (_, index) => index * 600),
+    durationMs: 240_000,
   });
   const bed = profile({
     role: "instrumental",
-    bpm: 126.048,
+    bpm: 120,
     bpmConfidence: 0.697,
     beatConfidence: 0.833,
-    beatGridMs: Array.from({ length: 452 }, (_, index) => index * 476),
-    durationMs: 215_140,
+    beatGridMs: Array.from({ length: 481 }, (_, index) => index * 500),
+    durationMs: 240_000,
   });
 
   const result = planMashup(vocals, bed, { strategy: "continuous", jointTempo: false });
   assert.ok(result.ok);
-  assert.ok(Math.abs(result.plan.masterBpm - 126.048) < 0.01);
-  assert.ok(Math.abs(result.plan.vocalsStretchRatio - (109.89 / 126.048)) < 0.002,
-    `expected the ~110 BPM vocal to adapt to the ~126 BPM bed, got ×${result.plan.vocalsStretchRatio}`);
+  assert.ok(Math.abs(result.plan.masterBpm - 120) < 0.01);
+  assert.ok(Math.abs(result.plan.vocalsStretchRatio - (100 / 120)) < 0.002,
+    `expected the 100 BPM vocal to adapt to the 120 BPM bed, got ×${result.plan.vocalsStretchRatio}`);
   assert.ok(result.plan.rationale.some((line) => /current beat grid.*phase-fit confidence/i.test(line)));
   assert.ok(result.plan.warnings.some((warning) => /BPM autocorrelation confidence is low/i.test(warning)));
 
@@ -1308,8 +1305,8 @@ test("plan: missing passage fingerprints and sparse measured features keep the s
   assert.equal(result.plan.passageSearch?.rankableDonorPassageCount, 0);
   assert.match(result.plan.passageSearch!.evaluations[0]!.reason, /no current checksum-bound passage fingerprint/);
   assert.match(result.plan.passageSearch!.evaluations[1]!.reason, /measured rhythm, harmony, and beat-phase inputs/);
-  assert.equal(result.plan.segments[0]!.mashupStartMs, 2_000,
-    "incomplete passage evidence uses the one-bar fallback instead of treating a generic section edge as a song-form entry");
+  assert.equal(result.plan.segments[0]!.mashupStartMs, 1_750,
+    "incomplete passage evidence uses the paired source-grid fallback instead of a generic section edge");
 });
 
 test("plan: a valid early-bed match is not discarded just because it precedes the fallback entry", () => {
@@ -1741,41 +1738,48 @@ test("arrangement scoring keeps an unverified breakdown candidate role-neutral",
   assert.equal(bedSectionRoleAt([section("breakdown", 10_000, 20_000)], 15_000), "breakdown");
 });
 
-test("plan: full-track arrangement keeps the continuous overlay when no re-placement wins decisively", () => {
-  const drumEvents = Array.from({ length: 61 }, (_, index) => ({
-    timestampMs: index * 250, confidence: 0.9, strength: 0.6,
-  }));
+test("plan: attack coincidences alone cannot authorize a vocal-entry search", () => {
   const vocals = profile({
-    role: "vocals", sourceChecksumSha256: "d".repeat(64), durationMs: 12_000,
+    role: "vocals",
+    durationMs: 16_000,
     bpmConfidence: 0.95,
-    vocalPhrases: [
-      { startMs: 500, endMs: 5_500, confidence: 0.95 },
-      { startMs: 6_500, endMs: 11_500, confidence: 0.95 },
-    ],
+    vocalPhrases: [500, 4_500, 8_500, 12_500].map((startMs) => ({
+      startMs,
+      endMs: startMs + 1_000,
+      confidence: 0.95,
+    })),
   });
   const bed = profile({
-    role: "instrumental", sourceChecksumSha256: "b".repeat(64), durationMs: 15_000,
+    role: "instrumental",
+    durationMs: 20_000,
     bpmConfidence: 0.95,
     sections: [],
-    drumEvents,
   });
-  const result = planMashup(vocals, bed);
-  assert.ok(result.ok);
-  const arrangement = result.plan.arrangement;
-  assert.ok(arrangement, "the comparison is recorded even when the overlay wins");
-  assert.equal(arrangement.selected, "continuous-overlay");
-  assert.equal(arrangement.evidence.pairedBeatGrids, false);
-  assert.equal(arrangement.pairedBeatPhaseFit, null);
-  assert.equal(arrangement.baselineBeatPhaseFit, null);
-  assert.ok(result.plan.warnings.some((warning) => warning.includes("paired donor-and-bed beat-grid check was unavailable")),
-    "the fallback explicitly says that two-track beat phase was not verified");
-  assert.equal(arrangement.coherentUnitsPlaced, arrangement.unitsTotal);
-  assert.equal(arrangement.continuousUnitsPlaced, arrangement.unitsTotal);
-  assert.ok(arrangement.coherentScore - arrangement.overlayScore <= Math.max(0.5, 0.03 * Math.abs(arrangement.overlayScore)) + 1e-9);
-  assert.equal(result.plan.segments.length, 1);
-  assert.equal(result.plan.segments[0]!.vocalsFromMs, 250, "the padded overlay body is kept intact");
-  assert.ok(result.plan.warnings.some((warning) => warning.includes("whole-body move")),
-    "the retained overlay is disclosed in the warnings");
+  const attackBiasedEvents = [2_000, 6_000, 10_000, 14_000].flatMap((timestampMs) => [
+    { timestampMs: timestampMs - 5, confidence: 0.95, strength: 0.8 },
+    { timestampMs: timestampMs + 5, confidence: 0.95, strength: 0.8 },
+  ]);
+  const unrelatedEvents = Array.from({ length: 8 }, (_, index) => ({
+    timestampMs: 16_000 + index * 300,
+    confidence: 0.95,
+    strength: 0.8,
+  }));
+  const attackBiased = planMashup(vocals, { ...bed, drumEvents: attackBiasedEvents });
+  const unrelated = planMashup(vocals, { ...bed, drumEvents: unrelatedEvents });
+
+  assert.ok(attackBiased.ok && unrelated.ok);
+  assert.equal(attackBiased.plan.arrangement, undefined,
+    "attack coincidences alone do not produce a ranked global entry");
+  assert.equal(unrelated.plan.arrangement, undefined);
+  assert.deepEqual(
+    attackBiased.plan.segments.map(({ mashupStartMs, mashupEndMs, vocalsFromMs, vocalsToMs }) =>
+      ({ mashupStartMs, mashupEndMs, vocalsFromMs, vocalsToMs })),
+    unrelated.plan.segments.map(({ mashupStartMs, mashupEndMs, vocalsFromMs, vocalsToMs }) =>
+      ({ mashupStartMs, mashupEndMs, vocalsFromMs, vocalsToMs })),
+    "moving the bed attacks cannot change the continuous whole-body fallback",
+  );
+  assert.ok(attackBiased.plan.warnings.some((warning) => warning.includes("Attack coincidences and inferred section labels alone are not enough")),
+    "the plan explains why it did not reposition the voice");
 });
 
 test("plan: long bed with no donor grounding keeps one body segment and warns instead of replaying the opening", () => {
@@ -1816,9 +1820,8 @@ test("plan: too-short bed keeps one full vocal clip and reports the bed-end trun
   });
   const result = planMashup(vocals, bed);
   assert.ok(result.ok);
-  const arrangement = result.plan.arrangement;
-  assert.ok(arrangement, "the arrangement comparison is recorded");
-  assert.equal(arrangement.unitsTotal, 2);
+  assert.equal(result.plan.arrangement, undefined,
+    "attack events alone do not produce an arrangement ranking");
   assert.equal(result.plan.segments.length, 1, "the vocal is not split to fake complete placement");
   assert.equal(result.plan.segments[0]!.vocalsFromMs, 250);
   assert.equal(result.plan.segments[0]!.vocalsToMs, 11_750);
@@ -1872,7 +1875,7 @@ test("plan: a longer bed may improve the fit only by shifting the whole vocal bo
     "the donor's verse phrase spacing remains unchanged");
 });
 
-test("plan: donor vocal phase is preserved against both tracks' drum grids", () => {
+test("plan: paired beat alignment preserves vocal offbeat phase without chasing a transient", () => {
   const donorBeats = Array.from({ length: 80 }, (_, index) => 200 + index * 500);
   const bedBeats = Array.from({ length: 121 }, (_, index) => index * 500);
   const vocals = profile({
@@ -1910,14 +1913,18 @@ test("plan: donor vocal phase is preserved against both tracks' drum grids", () 
   assert.ok(arrangement.pairedBeatPhaseFit);
   assert.ok(arrangement.baselineBeatPhaseFit);
   assert.equal(arrangement.baselineBeatPhaseFit.score, 0,
-    "the old entry puts the donor drums out of phase with the bed grid");
+    "the old entry puts the donor source beat grid out of phase with the bed grid");
   assert.equal(arrangement.pairedBeatPhaseFit.score, 1,
-    "the chosen offset aligns the donor drum beats to bed beats within tolerance");
+    "the chosen offset aligns the donor source beat grid to the bed grid within tolerance");
   assert.equal(arrangement.selected, "coherent-overlay");
-  assert.equal(arrangement.coherentEntryMs, 350,
-    "aligning the donor beat preserves the vocal's original 100 ms offbeat entry");
-  assert.equal(result.plan.segments[0]!.mashupStartMs, 350);
-  assert.ok(arrangement.rationale.some((line) => line.includes("donor drum beats are mapped to the bed drum grid")));
+  assert.equal(arrangement.coherentEntryMs, 1_850,
+    "the donor's offbeat phase is preserved by the paired grid; the planner does not chase a different coincident attack");
+  assert.equal(result.plan.segments[0]!.mashupStartMs, 1_850);
+  assert.ok(Number.isFinite(arrangement.placements[0]!.drumBassOnsetFit),
+    "attack overlap remains measurable when a valid paired-grid comparison exists");
+  assert.ok(arrangement.placements[0]!.evidence.some((item) => item.includes("diagnostic only")),
+    "attack overlap is clearly separated from placement-scoring evidence");
+  assert.ok(arrangement.rationale.some((line) => line.includes("donor source beat positions are mapped to the bed source beat grid")));
 });
 
 test("plan and render: bounded local tempo correction reduces slow donor-to-bed grid drift without cutting phrases", () => {
@@ -2052,10 +2059,11 @@ test("plan: a missing beat detection disables ordinal pairing and keeps the safe
   });
   const result = planMashup(vocals, bed);
   assert.ok(result.ok);
-  assert.equal(result.plan.arrangement?.evidence.pairedBeatGrids, false);
+  assert.equal(result.plan.arrangement, undefined,
+    "an incomplete paired beat grid and attacks alone cannot create an entry search");
   assert.equal(result.plan.segments.length, 1);
   assert.equal(result.plan.segments[0]?.localTempoMap, undefined);
-  assert.ok(result.plan.warnings.some((warning) => warning.includes("paired donor-and-bed beat-grid check was unavailable")));
+  assert.ok(result.plan.warnings.some((warning) => warning.includes("no paired source beat grid or measured vocal-to-bed chord evidence")));
 });
 
 // --- tempo octave ambiguity ------------------------------------------------

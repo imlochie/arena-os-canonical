@@ -46,7 +46,7 @@ import {
 import { hasReliableSessionDownbeatEvidence } from "../session-dj-controls";
 import { assessPerformancePhase, compareStemGrooves, proposeGrooveEntryShift, type StemGrooveEvidence, type PerformancePhaseAssessment } from "../types/stem-groove";
 
-export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v13";
+export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v14";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
 
 export type MashupSection = {
@@ -1727,7 +1727,7 @@ function rankedPassageEntry(
 
 // ------------------------------------------------------------------
 // Full-track arrangement — compare the donor and bed across the whole vocal
-// body. When both tracks have trusted drum grids, map donor beats onto bed
+// body. When both sources have trusted beat grids, map donor beats onto bed
 // beats before ranking one coherent global offset; then check harmonic,
 // transient and section context. Without paired grids, keep the measured
 // first-activity fallback. No semantic verse/chorus/lyric claims are made.
@@ -2025,7 +2025,7 @@ function scorePairedBeatPhaseWithMap(
 }
 
 /**
- * Correct only slow, measured phase drift between the two trusted drum grids.
+ * Correct only slow, measured phase drift between the two trusted source beat grids.
  * The continuous vocal body remains one performance; rate changes are bounded
  * to ±1.5% around the verified global BPM transform and smoothed over beats.
  */
@@ -2158,16 +2158,19 @@ function arrangementFeatureScore(
       label: `vocal-to-bed chord-tone agreement ${(chord.similarity * 100).toFixed(0)}% across ${chord.stableNoteCount ? `${chord.stableNoteCount} stable estimated notes, duration-weighted` : `${chord.matchedFrames} voiced frames`}`,
     });
   }
-  if (transient !== null) {
-    channels.push({
-      score: Math.max(0, Math.min(1, transient)),
-      weight: 0.35,
-      label: `drum/bass onset overlap ${(transient * 100).toFixed(0)}% over ${unit.onsetOffsetsMs.length} voiced onset(s)`,
-    });
-  }
+  // An attack coinciding with a kick or bass transient does not establish
+  // that a vocal phrase is in time. Sparse transients can make an otherwise
+  // poor global placement look better, so retain the measurement for review
+  // but never let it move or rank the complete vocal body.
   channels.push({ score: roleScore, weight: 0.15, label: `bed section role hypothesis (${bedSectionRole}) — not a semantic label` });
   const totalWeight = channels.reduce((total, channel) => total + channel.weight, 0);
   const score = channels.reduce((total, channel) => total + channel.score * channel.weight, 0) / totalWeight;
+  const scoreEvidence = channels.map((channel) => channel.label);
+  if (transient !== null) {
+    scoreEvidence.push(
+      `diagnostic only: drum/bass onset overlap ${(Math.max(0, Math.min(1, transient)) * 100).toFixed(0)}% over ${unit.onsetOffsetsMs.length} voiced onset(s); not used to score placement`,
+    );
+  }
   return {
     score,
     vocalChordFit: chord?.similarity ?? null,
@@ -2175,7 +2178,7 @@ function arrangementFeatureScore(
     chordFrames: chord?.matchedFrames ?? 0,
     drumBassOnsetFit: transient === null ? null : Math.max(0, Math.min(1, transient)),
     bedSectionRole,
-    evidence: channels.map((channel) => channel.label),
+    evidence: scoreEvidence,
   };
 }
 
@@ -2230,7 +2233,10 @@ function planArrangement(
     pairedBeatGrids: baselineBeatPhaseFit !== null,
     sectionRoles: bed.sections.length >= 2,
   };
-  const informative = evidence.chordTimeline || evidence.drumTransients || evidence.bassAttacks;
+  // Attacks can describe timbre and event density, but they cannot justify
+  // choosing a global vocal entry. Only paired source beat grids or measured
+  // vocal-to-bed harmonic evidence can authorize this comparison.
+  const informative = evidence.pairedBeatGrids || evidence.chordTimeline;
   if (!informative) return null;
 
   const context: ArrangementBedContext = {
@@ -2272,8 +2278,9 @@ function planArrangement(
   let coherentBeatPhaseFit: PairedBeatPhaseFit | null = null;
   let coherentPhaseSafe = false;
   for (const anchorMs of slots) {
-    // When both tracks have a trusted drum grid, align a donor drum beat to a
-    // bed drum beat. Otherwise preserve the old first-vocal-activity anchor.
+    // These are source beat grids, not isolated-drum grids. Aligning them keeps
+    // the whole source timelines phase-consistent; do not describe this as a
+    // measured drum-to-drum comparison.
     const candidateEntryMs = Math.round(anchorMs - (sourceAnchorMs - body.fromMs) * stretchRatio);
     if (candidateEntryMs < 0 || candidateEntryMs + bodySpanMs > bed.durationMs + 1) continue;
     let candidateScore = 0;
@@ -2363,14 +2370,14 @@ function planArrangement(
   const warnings: string[] = [];
   const evidenceSources = [
     evidence.chordTimeline ? "the bed's measured chord timeline" : null,
-    evidence.drumTransients ? "measured drum transients" : null,
-    evidence.bassAttacks ? "measured bass attacks" : null,
+    evidence.drumTransients ? "measured drum transients (diagnostic only)" : null,
+    evidence.bassAttacks ? "measured bass attacks (diagnostic only)" : null,
     evidence.pairedBeatGrids ? "paired donor/bed beat grids" : null,
     evidence.sectionRoles ? "inferred bed section roles (unverified hypotheses)" : null,
   ].filter(Boolean).join(", ");
   if (coherentBetter) {
     rationale.push(
-      `${evidence.pairedBeatGrids ? "donor drum beats are mapped to the bed drum grid" : "the first activity window is anchored to a measured beat"}; the whole vocal body keeps its source-relative timing at the same ${stretchRatio.toFixed(3)}× tempo ratio (${evidenceSources})`,
+      `${evidence.pairedBeatGrids ? "donor source beat positions are mapped to the bed source beat grid" : "the first activity window is anchored to a measured beat"}; the whole vocal body keeps its source-relative timing at the same ${stretchRatio.toFixed(3)}× tempo ratio (${evidenceSources})`,
     );
     if (coherentBeatPhaseFit && baselineBeatPhaseFit) {
       rationale.push(
@@ -2395,6 +2402,9 @@ function planArrangement(
   }
   if (!evidence.pairedBeatGrids) {
     warnings.push("A paired donor-and-bed beat-grid check was unavailable; this plan cannot verify both tracks' beat phase.");
+  }
+  if (drumEvents.length > 0 || bassEvents.length > 0) {
+    warnings.push("Coincident drum/bass attacks are shown as diagnostics only. They do not score vocal placement because attack overlap alone cannot verify phrase timing.");
   }
   const unitsSkipped = unitTimings.length - selectedPlaced;
   if (unitsSkipped > 0) {
@@ -2934,6 +2944,10 @@ export function planMashup(
           `paired beat-grid fit for the selected ${arrangement.selected} entry: ${arrangement.pairedBeatPhaseFit.matchedBeats}/${arrangement.pairedBeatPhaseFit.comparedBeats} beats within ${GROOVE_MATCH_TOLERANCE_MS} ms (mean ${arrangement.pairedBeatPhaseFit.meanErrorMs.toFixed(1)} ms); continuous baseline ${arrangement.baselineBeatPhaseFit.matchedBeats}/${arrangement.baselineBeatPhaseFit.comparedBeats} (mean ${arrangement.baselineBeatPhaseFit.meanErrorMs.toFixed(1)} ms)`,
         );
       }
+    } else if (!passageMatchSelected) {
+      warnings.push(
+        "The full vocal body stays on the continuous fallback: no paired source beat grid or measured vocal-to-bed chord evidence supports moving its entry. Attack coincidences and inferred section labels alone are not enough.",
+      );
     }
     if (arrangement?.selected === "coherent-overlay" || stretchedMs >= bedRoomMs * 0.70) {
       // Keep the donor's full vocal body and all of its internal pauses in one
@@ -2972,7 +2986,7 @@ export function planMashup(
       });
       if (acceptedTempoMap) {
         rationale.push(
-          `bounded local beat correction shifted the entry ${acceptedTempoMap.entryShiftMs.toFixed(0)} ms and improved paired-grid fit from ${acceptedTempoMap.baselineFit.matchedBeats}/${acceptedTempoMap.baselineFit.comparedBeats} beats (mean ${acceptedTempoMap.baselineFit.meanErrorMs.toFixed(1)} ms) to ${acceptedTempoMap.correctedFit.matchedBeats}/${acceptedTempoMap.correctedFit.comparedBeats} (mean ${acceptedTempoMap.correctedFit.meanErrorMs.toFixed(1)} ms); this follows drum-grid timing, not lyric transcription or a subjective mix-quality score`,
+          `bounded local beat correction shifted the entry ${acceptedTempoMap.entryShiftMs.toFixed(0)} ms and improved paired source-grid fit from ${acceptedTempoMap.baselineFit.matchedBeats}/${acceptedTempoMap.baselineFit.comparedBeats} beats (mean ${acceptedTempoMap.baselineFit.meanErrorMs.toFixed(1)} ms) to ${acceptedTempoMap.correctedFit.matchedBeats}/${acceptedTempoMap.correctedFit.comparedBeats} (mean ${acceptedTempoMap.correctedFit.meanErrorMs.toFixed(1)} ms); this is source beat-grid timing, not isolated-drum or lyric transcription evidence and not a subjective mix-quality score`,
         );
         warnings.push("Local beat correction uses a gently varying, pitch-preserving WSOLA rate on the complete vocal body. It does not identify lyric phrases or guarantee that the resulting mashup sounds good.");
       }
