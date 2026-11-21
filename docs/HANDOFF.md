@@ -52,6 +52,10 @@ This protects a user-selected vocal entrance; it does not prove that the
 recommended underlying music is a good fit or that automatic verse/chorus
 recognition works.
 
+**Verification:** The persisted-route regression and meeting-point unit tests
+pass 7/7. Workspace library and artifact typechecks pass, and `git diff
+--check` is clean.
+
 When the current planner has no rankable vocal-to-bed passage, Mashup Studio
 now says the available full-body render is an unverified timing fallback and
 offers a direct action to select that song's separated vocal in Analyze. The

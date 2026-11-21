@@ -33,7 +33,7 @@ describe("Musical Meeting Points", () => {
 
   it("keeps manual section labels distinct from detected section evidence", () => {
     const result = discoverMusicalMeetingPoints({
-      source: { ...source, sectionEvidence: "manual", startMs: 250 },
+      source: { ...source, sectionEvidence: "manual", startMs: 250, endMs: 16_250 },
       targets: [target()],
       remixBpm: 120,
       targetKey: "C major",
