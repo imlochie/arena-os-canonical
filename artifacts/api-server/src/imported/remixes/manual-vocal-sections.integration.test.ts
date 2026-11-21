@@ -14,6 +14,7 @@ import {
   sourceAssets,
   stemAssets,
 } from "@workspace/db/waveyardSchema";
+import { GET as readRemix, PUT as saveRemix } from "./[id]/route.ts";
 import { GET as readVocalSections, PUT as saveVocalSections } from "./[id]/manual-vocal-sections/route.ts";
 import { POST as findMeetingPoints, PUT as acceptMeetingPoint } from "./[id]/meeting-points/route.ts";
 
@@ -96,7 +97,8 @@ test("private vocal markers persist, guide placement without detector sections, 
     assert.deepEqual((await initial.json() as { sections: unknown[] }).sections, []);
 
     const section = {
-      id: crypto.randomUUID(), label: "verse", title: "", startMs: 0, endMs: 16_000,
+      // Deliberately preserve a 250 ms pickup rather than snapping it to beat 0.
+      id: crypto.randomUUID(), label: "verse", title: "", startMs: 250, endMs: 16_250,
     };
     const saved = await saveVocalSections(request("PUT", "/", {
       expectedRevision: 0, sections: [section],
@@ -115,10 +117,11 @@ test("private vocal markers persist, guide placement without detector sections, 
       stemAssetId: vocalStem.id, sourceSectionId: section.id,
     }), { params: Promise.resolve({ id: remix.id }) });
     assert.equal(recommendations.status, 200);
-    const points = (await recommendations.json() as { points: Array<{ id: string; state: string; sectionAligned: boolean; reasons: string[] }> }).points;
+    const points = (await recommendations.json() as { points: Array<{ id: string; state: string; sectionAligned: boolean; beatSnapEnabled: boolean; reasons: string[] }> }).points;
     assert.equal(points.length, 1);
     assert.equal(points[0].state, "ready");
     assert.equal(points[0].sectionAligned, false);
+    assert.equal(points[0].beatSnapEnabled, false, "manual vocal source time must not be quantized to a beat");
     assert.ok(points[0].reasons.some((reason) => reason.includes("marked by the user")));
 
     const accepted = await acceptMeetingPoint(request("PUT", "/", {
@@ -131,6 +134,26 @@ test("private vocal markers persist, guide placement without detector sections, 
     assert.equal(vocalClip.sourceOffsetMs, section.startMs);
     assert.equal(vocalClip.durationMs, bedClip.durationMs);
     assert.equal(vocalClip.tempoSyncEnabled, false);
+    assert.equal(vocalClip.beatSnapEnabled, false);
+
+    // The standard Studio save route resolves beat snapping from the persisted
+    // clip flag. A later ordinary edit/save must retain the marked pickup too.
+    const hydrated = await readRemix(request("GET", "/"), { params: Promise.resolve({ id: remix.id }) });
+    const hydratedBody = await hydrated.json() as {
+      remix: Record<string, unknown>;
+      tracks: Array<Record<string, unknown>>;
+      automation: unknown[];
+    };
+    const savedAgain = await saveRemix(request("PUT", "/", {
+      ...hydratedBody.remix,
+      tracks: hydratedBody.tracks,
+      automation: hydratedBody.automation,
+      expectedVersion: hydratedBody.remix.version,
+    }), { params: Promise.resolve({ id: remix.id }) });
+    assert.equal(savedAgain.status, 200);
+    const [clipAfterSave] = await db.select().from(remixClips).where(eq(remixClips.remixTrackId, vocalTrack.id));
+    assert.equal(clipAfterSave.sourceOffsetMs, section.startMs, "a normal persisted save must not move the human-marked vocal pickup");
+    assert.equal(clipAfterSave.beatSnapEnabled, false);
 
     await db.update(stemAssets).set({ checksumSha256: "e".repeat(64) }).where(eq(stemAssets.id, vocalStem.id));
     const stale = await readVocalSections(request("GET", "/"), { params });

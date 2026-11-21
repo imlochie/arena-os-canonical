@@ -33,12 +33,13 @@ describe("Musical Meeting Points", () => {
 
   it("keeps manual section labels distinct from detected section evidence", () => {
     const result = discoverMusicalMeetingPoints({
-      source: { ...source, sectionEvidence: "manual" },
+      source: { ...source, sectionEvidence: "manual", startMs: 250 },
       targets: [target()],
       remixBpm: 120,
       targetKey: "C major",
     });
-    expect(result[0]).toMatchObject({ state: "ready", sectionAligned: false });
+    expect(result[0]).toMatchObject({ state: "ready", sectionAligned: false, beatSnapEnabled: false });
+    expect(result[0]?.source.startMs).toBe(250);
     expect(result[0]?.reasons).toContain("source range and role were marked by the user; the fit remains an analysis recommendation");
   });
 

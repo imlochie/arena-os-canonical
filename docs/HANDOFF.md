@@ -38,6 +38,20 @@ the fingerprint path without vocal timing and the section-label-only fallback
 stay out of automatic selection. It does not establish that the resulting
 real-song mix is listenable; the owner must still audition a viable pair.
 
+### Manual vocal pickup preservation
+
+Manual vocal-section recommendations now keep the exact source time the user
+marked. The target arrangement must still pass the existing beat-alignment
+check, but the accepted clip does not enable source-side beat snapping: a later
+ordinary Studio save therefore cannot quantize an intentional vocal pickup to
+the nearest source beat. A persisted-route regression marks a 250 ms pickup,
+accepts its placement, hydrates the arrangement, saves it through the normal
+Remix endpoint, and checks the offset remains 250 ms.
+
+This protects a user-selected vocal entrance; it does not prove that the
+recommended underlying music is a good fit or that automatic verse/chorus
+recognition works.
+
 When the current planner has no rankable vocal-to-bed passage, Mashup Studio
 now says the available full-body render is an unverified timing fallback and
 offers a direct action to select that song's separated vocal in Analyze. The

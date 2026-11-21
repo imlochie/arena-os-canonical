@@ -150,7 +150,12 @@ export function discoverMusicalMeetingPoints(input: {
         targetKey: projectKey,
         keyShiftSemitones: keyShift,
         keySyncEnabled,
-        beatSnapEnabled: true,
+        // A human-marked vocal boundary may deliberately include a pickup or
+        // sit ahead/behind the beat. The target timeline is already checked
+        // for beat alignment above; snapping the source offset here would
+        // silently replace the listener's selected entrance with a different
+        // source moment on the next persisted Studio save.
+        beatSnapEnabled: input.source.sectionEvidence !== "manual",
         phraseAligned,
         sectionAligned,
         reasons,
