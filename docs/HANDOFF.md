@@ -52,6 +52,29 @@ This protects a user-selected vocal entrance; it does not prove that the
 recommended underlying music is a good fit or that automatic verse/chorus
 recognition works.
 
+### Host-vocal occupancy in manual placement recommendations
+
+When recommending where a manually marked vocal passage can be added, the route
+now reads the remix's persisted vocal-role clips and their checksum-current
+activity analyses. It projects those source-relative intervals through each
+saved clip's source window and tempo-sync transform, then reports the fraction
+of each candidate timeline window that already contains detected vocal
+activity. Lower measured overlap is ranked first; unavailable or stale analysis
+is kept distinct from a measured zero and receives no preference. If there is
+no existing vocal-role clip, that is reported separately.
+
+This is a coarse occupancy cue only. It does not identify lyrics, distinguish
+lead from backing vocals, detect separation leakage, or establish that two
+performances can coexist musically. Recommendations remain editable and must
+be auditioned; no candidate is rejected based on this signal.
+
+**Verification:** The persisted-route regression seeds a real database-backed
+host-vocal analysis and verifies its 50% activity overlap appears in the
+recommendation. Unit tests cover source-window/tempo projection, overlap union,
+malformed-evidence handling, ordering and unavailable-vs-zero behavior. The
+focused route and unit suite passes 10/10; workspace typecheck passes. This
+does not prove higher-quality audio or live-mix performance.
+
 **Verification:** The persisted-route regression and meeting-point unit tests
 pass 7/7. Workspace library and artifact typechecks pass, and `git diff
 --check` is clean.

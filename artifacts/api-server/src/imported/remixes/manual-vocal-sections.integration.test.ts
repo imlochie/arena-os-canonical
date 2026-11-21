@@ -13,6 +13,8 @@ import {
   sourceAnalyses,
   sourceAssets,
   stemAssets,
+  vocalAnalyses,
+  vocalActivityIntervals,
 } from "@workspace/db/waveyardSchema";
 import { GET as readRemix, PUT as saveRemix } from "./[id]/route.ts";
 import { GET as readVocalSections, PUT as saveVocalSections } from "./[id]/manual-vocal-sections/route.ts";
@@ -33,7 +35,7 @@ test("private vocal markers persist, guide placement without detector sections, 
     title: "Temporary vocal-section acceptance",
   }).returning({ id: projects.id });
   try {
-    const [vocalSource, bedSource] = await db.insert(sourceAssets).values([
+    const [vocalSource, bedSource, hostVocalSource] = await db.insert(sourceAssets).values([
       {
         projectId: project.id, originalFilename: "vocal.wav", mimeType: "audio/wav",
         storageKey: `test/manual-vocal/${crypto.randomUUID()}/vocal.wav`, checksumSha256: "a".repeat(64),
@@ -44,12 +46,18 @@ test("private vocal markers persist, guide placement without detector sections, 
         storageKey: `test/manual-vocal/${crypto.randomUUID()}/bed.wav`, checksumSha256: "b".repeat(64),
         durationSeconds: 60, sampleRate: 48_000, channels: 2, codec: "pcm_s16le", fileSizeBytes: 10,
       },
+      {
+        projectId: project.id, originalFilename: "host-vocal.wav", mimeType: "audio/wav",
+        storageKey: `test/manual-vocal/${crypto.randomUUID()}/host-vocal.wav`, checksumSha256: "f".repeat(64),
+        durationSeconds: 60, sampleRate: 48_000, channels: 2, codec: "pcm_s16le", fileSizeBytes: 10,
+      },
     ]).returning();
-    const [vocalJob, bedJob] = await db.insert(processingJobs).values([
+    const [vocalJob, bedJob, hostVocalJob] = await db.insert(processingJobs).values([
       { projectId: project.id, sourceAssetId: vocalSource.id, type: "separation", idempotencyKey: crypto.randomUUID(), model: "fixture", requestedDevice: "cpu" },
       { projectId: project.id, sourceAssetId: bedSource.id, type: "separation", idempotencyKey: crypto.randomUUID(), model: "fixture", requestedDevice: "cpu" },
+      { projectId: project.id, sourceAssetId: hostVocalSource.id, type: "separation", idempotencyKey: crypto.randomUUID(), model: "fixture", requestedDevice: "cpu" },
     ]).returning();
-    const [vocalStem, bedStem] = await db.insert(stemAssets).values([
+    const [vocalStem, bedStem, hostVocalStem] = await db.insert(stemAssets).values([
       {
         projectId: project.id, sourceAssetId: vocalSource.id, separationJobId: vocalJob.id, stemType: "vocals",
         engine: "fixture", model: "fixture", modelVersion: "1", storageKey: `test/manual-vocal/${crypto.randomUUID()}/vocals.wav`,
@@ -60,6 +68,12 @@ test("private vocal markers persist, guide placement without detector sections, 
         projectId: project.id, sourceAssetId: bedSource.id, separationJobId: bedJob.id, stemType: "drums",
         engine: "fixture", model: "fixture", modelVersion: "1", storageKey: `test/manual-vocal/${crypto.randomUUID()}/drums.wav`,
         checksumSha256: "d".repeat(64), durationSeconds: 60, sampleRate: 48_000, channels: 2,
+        codec: "pcm_s16le", format: "wav", fileSizeBytes: 10,
+      },
+      {
+        projectId: project.id, sourceAssetId: hostVocalSource.id, separationJobId: hostVocalJob.id, stemType: "vocals",
+        engine: "fixture", model: "fixture", modelVersion: "1", storageKey: `test/manual-vocal/${crypto.randomUUID()}/host-vocals.wav`,
+        checksumSha256: "g".repeat(64), durationSeconds: 60, sampleRate: 48_000, channels: 2,
         codec: "pcm_s16le", format: "wav", fileSizeBytes: 10,
       },
     ]).returning();
@@ -77,7 +91,36 @@ test("private vocal markers persist, guide placement without detector sections, 
         sourceChecksumSha256: bedSource.checksumSha256, bpm: 120, bpmConfidence: 1,
         musicalKey: "C major", keyConfidence: 1, beatGrid: JSON.stringify(grid), beatConfidence: 1,
       },
+      {
+        projectId: project.id, sourceAssetId: hostVocalSource.id, status: "complete", stage: "complete",
+        idempotencyKey: crypto.randomUUID(), analysisEngine: "fixture", analysisEngineVersion: "1",
+        sourceChecksumSha256: hostVocalSource.checksumSha256, bpm: 120, bpmConfidence: 1,
+        musicalKey: "C major", keyConfidence: 1, beatGrid: JSON.stringify(grid), beatConfidence: 1,
+      },
     ]);
+    const [hostVocalAnalysis] = await db.insert(vocalAnalyses).values({
+      projectId: project.id,
+      sourceAssetId: hostVocalSource.id,
+      stemAssetId: hostVocalStem.id,
+      status: "complete",
+      stage: "complete",
+      attempts: 1,
+      idempotencyKey: crypto.randomUUID(),
+      analysisEngine: "fixture",
+      analysisEngineVersion: "1",
+      sourceChecksumSha256: hostVocalSource.checksumSha256,
+      stemChecksumSha256: hostVocalStem.checksumSha256,
+      startedAt: new Date(),
+      analyzedAt: new Date(),
+      completedAt: new Date(),
+    }).returning({ id: vocalAnalyses.id });
+    await db.insert(vocalActivityIntervals).values({
+      vocalAnalysisId: hostVocalAnalysis.id,
+      intervalIndex: 0,
+      startMs: 0,
+      endMs: 8_000,
+      confidence: 0.9,
+    });
     const [remix] = await db.insert(remixSessions).values({
       projectId: project.id, ownerId: LOCAL_OWNER_ID, name: "Private marker acceptance",
       tempoBpm: 120, targetKey: "C major",
@@ -85,11 +128,19 @@ test("private vocal markers persist, guide placement without detector sections, 
     const [bedTrack] = await db.insert(remixTracks).values({
       remixSessionId: remix.id, stemAssetId: bedStem.id, name: "Bed drums", sortOrder: 0,
     }).returning();
+    const [hostVocalTrack] = await db.insert(remixTracks).values({
+      remixSessionId: remix.id, stemAssetId: hostVocalStem.id, name: "Host vocals", sortOrder: 1,
+    }).returning();
     const [bedClip] = await db.insert(remixClips).values({
       remixTrackId: bedTrack.id, stemAssetId: bedStem.id, timelineStartMs: 16_000, durationMs: 16_000,
       sourceOffsetMs: 0, gain: 1, fadeInMs: 0, fadeOutMs: 0,
       tempoSyncEnabled: false, keySyncEnabled: false, beatSnapEnabled: true,
     }).returning();
+    await db.insert(remixClips).values({
+      remixTrackId: hostVocalTrack.id, stemAssetId: hostVocalStem.id, timelineStartMs: 16_000, durationMs: 16_000,
+      sourceOffsetMs: 0, gain: 1, fadeInMs: 0, fadeOutMs: 0,
+      tempoSyncEnabled: false, keySyncEnabled: false, beatSnapEnabled: true,
+    });
 
     const params = Promise.resolve({ id: remix.id, sourceAssetId: vocalSource.id, stemAssetId: vocalStem.id });
     const initial = await readVocalSections(request("GET", "/"), { params });
@@ -117,12 +168,30 @@ test("private vocal markers persist, guide placement without detector sections, 
       stemAssetId: vocalStem.id, sourceSectionId: section.id,
     }), { params: Promise.resolve({ id: remix.id }) });
     assert.equal(recommendations.status, 200);
-    const points = (await recommendations.json() as { points: Array<{ id: string; state: string; sectionAligned: boolean; beatSnapEnabled: boolean; reasons: string[] }> }).points;
-    assert.equal(points.length, 1);
+    const points = (await recommendations.json() as { points: Array<{
+      id: string;
+      state: string;
+      sectionAligned: boolean;
+      beatSnapEnabled: boolean;
+      reasons: string[];
+      vocalSlotEvidence: { status: string; overlapRatio: number | null } | null;
+    }> }).points;
+    assert.equal(points.length, 2);
     assert.equal(points[0].state, "ready");
     assert.equal(points[0].sectionAligned, false);
     assert.equal(points[0].beatSnapEnabled, false, "manual vocal source time must not be quantized to a beat");
     assert.ok(points[0].reasons.some((reason) => reason.includes("marked by the user")));
+    assert.deepEqual(points[0].vocalSlotEvidence, { status: "measured", overlapRatio: 0.5 });
+    assert.ok(points[0].reasons.some((reason) => reason.includes("activity overlaps 50%")));
+
+    await db.update(stemAssets).set({ checksumSha256: "h".repeat(64) }).where(eq(stemAssets.id, hostVocalStem.id));
+    const staleHostRecommendations = await findMeetingPoints(request("POST", "/", {
+      stemAssetId: vocalStem.id, sourceSectionId: section.id,
+    }), { params: Promise.resolve({ id: remix.id }) });
+    const staleHostPoints = (await staleHostRecommendations.json() as { points: typeof points }).points;
+    assert.ok(staleHostPoints.length > 0);
+    assert.ok(staleHostPoints.every((point) => point.vocalSlotEvidence?.status === "unavailable"),
+      "stale host-vocal activity must remain unavailable, not become a measured silent window");
 
     const accepted = await acceptMeetingPoint(request("PUT", "/", {
       stemAssetId: vocalStem.id, sourceSectionId: section.id, meetingPointId: points[0].id,

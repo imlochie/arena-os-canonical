@@ -1,5 +1,6 @@
 import { normaliseMusicalKey, semitoneShift, type MusicalKey } from "./musical-key";
 import { tempoRatioForBpm, usableBeatGrid } from "./beat-grid";
+import type { VocalActivityInterval } from "./vocal-analysis";
 
 export const MUSICAL_MEETING_POINT_ENGINE = "waveyard-musical-meeting-points";
 export const MUSICAL_MEETING_POINT_ENGINE_VERSION = "1";
@@ -12,12 +13,6 @@ export type MeetingPointAnalysis = {
   bpm: number | null;
   musicalKey: string | null;
   beatGridMs: unknown;
-};
-
-export type VocalActivityInterval = {
-  startMs: number;
-  endMs: number;
-  confidence: number;
 };
 
 export type VocalSlotEvidence =
@@ -45,6 +40,8 @@ export function projectVocalActivityToTimeline(input: {
     || ![timelineStartMs, durationMs, sourceOffsetMs].every(Number.isSafeInteger)
     || timelineStartMs < 0 || durationMs <= 0 || sourceOffsetMs < 0 || sourceDurationMs <= 0 || tempoRatio <= 0)
     return null;
+  if (!Number.isSafeInteger(timelineStartMs + durationMs)
+    || !Number.isFinite(sourceOffsetMs + durationMs * tempoRatio)) return null;
   const sourceEndMs = Math.min(sourceDurationMs, sourceOffsetMs + durationMs * tempoRatio);
   if (sourceEndMs <= sourceOffsetMs) return null;
   const result: VocalActivityInterval[] = [];
@@ -74,16 +71,19 @@ export function vocalActivityOverlapRatio(
   intervals: readonly VocalActivityInterval[] | null,
 ): number | null {
   if (intervals === null || !Number.isSafeInteger(timelineStartMs) || timelineStartMs < 0
-    || !Number.isSafeInteger(durationMs) || durationMs <= 0) return null;
+    || !Number.isSafeInteger(durationMs) || durationMs <= 0
+    || !Number.isSafeInteger(timelineStartMs + durationMs)) return null;
   const endMs = timelineStartMs + durationMs;
-  const clipped = intervals.flatMap((interval) => {
+  const clipped: Array<{ start: number; end: number }> = [];
+  for (const interval of intervals) {
     if (!Number.isSafeInteger(interval.startMs) || !Number.isSafeInteger(interval.endMs)
       || interval.endMs <= interval.startMs || !Number.isFinite(interval.confidence)
-      || interval.confidence < 0 || interval.confidence > 1) return [];
+      || interval.startMs < 0 || interval.confidence < 0 || interval.confidence > 1) return null;
     const start = Math.max(timelineStartMs, interval.startMs);
     const end = Math.min(endMs, interval.endMs);
-    return end > start ? [{ start, end }] : [];
-  }).sort((left, right) => left.start - right.start || left.end - right.end);
+    if (end > start) clipped.push({ start, end });
+  }
+  clipped.sort((left, right) => left.start - right.start || left.end - right.end);
   let coveredMs = 0;
   let unionStart: number | null = null;
   let unionEnd = 0;
@@ -267,7 +267,9 @@ export function discoverMusicalMeetingPoints(input: {
       if (input.source.stemType === "vocals") {
         const slotRank = (evidence: VocalSlotEvidence | null) => evidence?.status === "no-existing-vocal-clip"
           ? -1
-          : evidence?.status === "measured" ? evidence.overlapRatio : Number.POSITIVE_INFINITY;
+          : evidence?.status === "measured" && Number.isFinite(evidence.overlapRatio)
+            ? evidence.overlapRatio
+            : Number.POSITIVE_INFINITY;
         const slotOrder = slotRank(left.vocalSlotEvidence) - slotRank(right.vocalSlotEvidence);
         if (Number.isFinite(slotOrder) && slotOrder !== 0) return slotOrder;
         if (!Number.isFinite(slotOrder)) {

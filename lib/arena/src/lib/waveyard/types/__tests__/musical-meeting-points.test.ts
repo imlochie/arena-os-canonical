@@ -1,6 +1,12 @@
 import { describe, it } from "node:test";
 import { expect } from "../../test-shim";
-import { discoverMusicalMeetingPoints, type MeetingPointSourceRegion, type MeetingPointTargetRegion } from "../index";
+import {
+  discoverMusicalMeetingPoints,
+  projectVocalActivityToTimeline,
+  vocalActivityOverlapRatio,
+  type MeetingPointSourceRegion,
+  type MeetingPointTargetRegion,
+} from "../index";
 
 const grid = Array.from({ length: 65 }, (_, index) => index * 500);
 const source: MeetingPointSourceRegion = {
@@ -64,5 +70,63 @@ describe("Musical Meeting Points", () => {
     expect(first).toEqual(second);
     expect(first[0]?.source.sourceAssetId).toBe("source-b");
     expect(first[0]?.target.sourceAssetId).toBe("different-source-with-same-content");
+  });
+
+  it("maps persisted vocal activity through the source window and tempo transform", () => {
+    const mapped = projectVocalActivityToTimeline({
+      timelineStartMs: 10_000,
+      durationMs: 4_000,
+      sourceOffsetMs: 2_000,
+      sourceDurationMs: 20_000,
+      tempoRatio: 0.5,
+      intervals: [
+        { startMs: 1_000, endMs: 4_000, confidence: 0.8 },
+        { startMs: 3_000, endMs: 6_000, confidence: 0.9 },
+      ],
+    });
+    expect(mapped).toEqual([
+      { startMs: 10_000, endMs: 14_000, confidence: 0.8 },
+      { startMs: 12_000, endMs: 14_000, confidence: 0.9 },
+    ]);
+    expect(projectVocalActivityToTimeline({
+      timelineStartMs: 10_000, durationMs: 4_000, sourceOffsetMs: 2_000,
+      sourceDurationMs: 20_000, tempoRatio: 0.5, intervals: [],
+    })).toEqual([]);
+    expect(projectVocalActivityToTimeline({
+      timelineStartMs: 10_000, durationMs: 4_000, sourceOffsetMs: 2_000,
+      sourceDurationMs: 20_000, tempoRatio: 0.5, intervals: null,
+    })).toBeNull();
+  });
+
+  it("measures the union of activity without double-counting and fails closed on malformed evidence", () => {
+    expect(vocalActivityOverlapRatio(2_000, 8_000, [
+      { startMs: 0, endMs: 4_000, confidence: 0.7 },
+      { startMs: 2_000, endMs: 6_000, confidence: 0.8 },
+      { startMs: 9_000, endMs: 12_000, confidence: 0.9 },
+    ])).toBe(0.625);
+    expect(vocalActivityOverlapRatio(2_000, 8_000, [])).toBe(0);
+    expect(vocalActivityOverlapRatio(2_000, 8_000, null)).toBeNull();
+    expect(vocalActivityOverlapRatio(2_000, 8_000, [
+      { startMs: 5_000, endMs: 4_000, confidence: 0.9 },
+    ])).toBeNull();
+  });
+
+  it("ranks vocal placement windows by persisted host activity but keeps unavailable evidence last", () => {
+    const vocalSource = { ...source, stemType: "vocals" };
+    const result = discoverMusicalMeetingPoints({
+      source: vocalSource,
+      targets: [
+        target({ targetClipId: "overlap", vocalSlotEvidence: { status: "measured", overlapRatio: 0.75 } }),
+        target({ targetClipId: "unknown", vocalSlotEvidence: { status: "unavailable", overlapRatio: null } }),
+        target({ targetClipId: "clear", vocalSlotEvidence: { status: "measured", overlapRatio: 0.1 } }),
+        target({ targetClipId: "empty", vocalSlotEvidence: { status: "no-existing-vocal-clip", overlapRatio: null } }),
+      ],
+      remixBpm: 120,
+      targetKey: "C major",
+    });
+    expect(result.map((point) => point.target.targetClipId)).toEqual(["empty", "clear", "overlap", "unknown"]);
+    expect(result[0]?.vocalSlotEvidence).toEqual({ status: "no-existing-vocal-clip", overlapRatio: null });
+    expect(result[1]?.reasons).toContain("existing vocal-role activity overlaps 10% of this window");
+    expect(result[3]?.reasons).toContain("existing vocal-role activity is unavailable; no vocal-slot preference was applied");
   });
 });
