@@ -14,9 +14,99 @@ export type MeetingPointAnalysis = {
   beatGridMs: unknown;
 };
 
+export type VocalActivityInterval = {
+  startMs: number;
+  endMs: number;
+  confidence: number;
+};
+
+export type VocalSlotEvidence =
+  | { status: "measured"; overlapRatio: number }
+  | { status: "no-existing-vocal-clip"; overlapRatio: null }
+  | { status: "unavailable"; overlapRatio: null };
+
+/**
+ * Projects checksum-current isolated-vocal activity through the same source
+ * window and tempo transform as its saved arrangement clip. A null result is
+ * unavailable evidence; an empty list is a measured clip with no detected
+ * vocal activity.
+ */
+export function projectVocalActivityToTimeline(input: {
+  timelineStartMs: number;
+  durationMs: number;
+  sourceOffsetMs: number;
+  sourceDurationMs: number;
+  tempoRatio: number;
+  intervals: readonly VocalActivityInterval[] | null;
+}): VocalActivityInterval[] | null {
+  const { timelineStartMs, durationMs, sourceOffsetMs, sourceDurationMs, tempoRatio, intervals } = input;
+  if (intervals === null
+    || ![timelineStartMs, durationMs, sourceOffsetMs, sourceDurationMs, tempoRatio].every(Number.isFinite)
+    || ![timelineStartMs, durationMs, sourceOffsetMs].every(Number.isSafeInteger)
+    || timelineStartMs < 0 || durationMs <= 0 || sourceOffsetMs < 0 || sourceDurationMs <= 0 || tempoRatio <= 0)
+    return null;
+  const sourceEndMs = Math.min(sourceDurationMs, sourceOffsetMs + durationMs * tempoRatio);
+  if (sourceEndMs <= sourceOffsetMs) return null;
+  const result: VocalActivityInterval[] = [];
+  for (const interval of intervals) {
+    if (![interval.startMs, interval.endMs, interval.confidence].every(Number.isFinite)
+      || !Number.isSafeInteger(interval.startMs) || !Number.isSafeInteger(interval.endMs)
+      || interval.startMs < 0 || interval.endMs <= interval.startMs
+      || interval.confidence < 0 || interval.confidence > 1)
+      return null;
+    const startMs = Math.max(sourceOffsetMs, interval.startMs);
+    const endMs = Math.min(sourceEndMs, interval.endMs);
+    if (endMs <= startMs) continue;
+    result.push({
+      startMs: Math.max(timelineStartMs, Math.round(timelineStartMs + (startMs - sourceOffsetMs) / tempoRatio)),
+      endMs: Math.min(timelineStartMs + durationMs, Math.round(timelineStartMs + (endMs - sourceOffsetMs) / tempoRatio)),
+      confidence: interval.confidence,
+    });
+  }
+  return result.filter((interval) => interval.endMs > interval.startMs)
+    .sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs);
+}
+
+/** Fraction of a timeline window covered by the union of measured vocal activity. */
+export function vocalActivityOverlapRatio(
+  timelineStartMs: number,
+  durationMs: number,
+  intervals: readonly VocalActivityInterval[] | null,
+): number | null {
+  if (intervals === null || !Number.isSafeInteger(timelineStartMs) || timelineStartMs < 0
+    || !Number.isSafeInteger(durationMs) || durationMs <= 0) return null;
+  const endMs = timelineStartMs + durationMs;
+  const clipped = intervals.flatMap((interval) => {
+    if (!Number.isSafeInteger(interval.startMs) || !Number.isSafeInteger(interval.endMs)
+      || interval.endMs <= interval.startMs || !Number.isFinite(interval.confidence)
+      || interval.confidence < 0 || interval.confidence > 1) return [];
+    const start = Math.max(timelineStartMs, interval.startMs);
+    const end = Math.min(endMs, interval.endMs);
+    return end > start ? [{ start, end }] : [];
+  }).sort((left, right) => left.start - right.start || left.end - right.end);
+  let coveredMs = 0;
+  let unionStart: number | null = null;
+  let unionEnd = 0;
+  for (const interval of clipped) {
+    if (unionStart === null) {
+      unionStart = interval.start;
+      unionEnd = interval.end;
+    } else if (interval.start <= unionEnd) {
+      unionEnd = Math.max(unionEnd, interval.end);
+    } else {
+      coveredMs += unionEnd - unionStart;
+      unionStart = interval.start;
+      unionEnd = interval.end;
+    }
+  }
+  if (unionStart !== null) coveredMs += unionEnd - unionStart;
+  return Math.max(0, Math.min(1, coveredMs / durationMs));
+}
+
 export type MeetingPointSourceRegion = {
   sourceAssetId: string;
   stemAssetId: string;
+  stemType?: string;
   sourceChecksumSha256: string;
   sectionId: string | null;
   startBeatIndex: number;
@@ -40,6 +130,7 @@ export type MeetingPointTargetRegion = {
   sectionId: string | null;
   beatAligned: boolean;
   analysis: MeetingPointAnalysis | null;
+  vocalSlotEvidence?: VocalSlotEvidence | null;
 };
 
 export type MusicalMeetingPoint = {
@@ -58,6 +149,7 @@ export type MusicalMeetingPoint = {
   phraseAligned: boolean;
   sectionAligned: boolean;
   reasons: string[];
+  vocalSlotEvidence: VocalSlotEvidence | null;
 };
 
 function sourceBars(region: MeetingPointSourceRegion) {
@@ -116,6 +208,15 @@ export function discoverMusicalMeetingPoints(input: {
       if (phraseAligned) reasons.push("source region begins and ends on vocal phrase boundaries");
       if (sectionAligned) reasons.push("both sides use detected section boundaries");
       if (input.source.sectionEvidence === "manual") reasons.push("source range and role were marked by the user; the fit remains an analysis recommendation");
+      if (input.source.stemType === "vocals") {
+        if (target.vocalSlotEvidence?.status === "measured") {
+          reasons.push(`existing vocal-role activity overlaps ${Math.round(target.vocalSlotEvidence.overlapRatio * 100)}% of this window`);
+        } else if (target.vocalSlotEvidence?.status === "no-existing-vocal-clip") {
+          reasons.push("no existing vocal-role clip occupies this window");
+        } else {
+          reasons.push("existing vocal-role activity is unavailable; no vocal-slot preference was applied");
+        }
+      }
       if (!sourceWindowFits) reasons.push("source section is shorter than this timeline window");
       if (!targetAnalysis) reasons.push("target source analysis is unavailable");
       const state: MusicalMeetingPointState = equalBars && target.beatAligned && sourceWindowFits && Boolean(projectKey && sourceKey) && Boolean(targetAnalysis)
@@ -159,7 +260,22 @@ export function discoverMusicalMeetingPoints(input: {
         phraseAligned,
         sectionAligned,
         reasons,
+        vocalSlotEvidence: input.source.stemType === "vocals" ? target.vocalSlotEvidence ?? null : null,
       };
     })
-    .sort((left, right) => left.target.timelineStartMs - right.target.timelineStartMs || left.id.localeCompare(right.id));
+    .sort((left, right) => {
+      if (input.source.stemType === "vocals") {
+        const slotRank = (evidence: VocalSlotEvidence | null) => evidence?.status === "no-existing-vocal-clip"
+          ? -1
+          : evidence?.status === "measured" ? evidence.overlapRatio : Number.POSITIVE_INFINITY;
+        const slotOrder = slotRank(left.vocalSlotEvidence) - slotRank(right.vocalSlotEvidence);
+        if (Number.isFinite(slotOrder) && slotOrder !== 0) return slotOrder;
+        if (!Number.isFinite(slotOrder)) {
+          const leftUnavailable = !Number.isFinite(slotRank(left.vocalSlotEvidence));
+          const rightUnavailable = !Number.isFinite(slotRank(right.vocalSlotEvidence));
+          if (leftUnavailable !== rightUnavailable) return leftUnavailable ? 1 : -1;
+        }
+      }
+      return left.target.timelineStartMs - right.target.timelineStartMs || left.id.localeCompare(right.id);
+    });
 }

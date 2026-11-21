@@ -13,10 +13,20 @@ import {
   sourceSections,
   stemAssets,
   vocalAnalyses,
+  vocalActivityIntervals,
   vocalPhrases,
 } from "@workspace/db/waveyardSchema";
-import { discoverMusicalMeetingPoints, type MusicalMeetingPoint } from "@workspace/arena/lib/waveyard/types";
-import { manualVocalSectionSchema, usableBeatGrid } from "@workspace/arena/lib/waveyard/types";
+import {
+  discoverMusicalMeetingPoints,
+  manualVocalSectionSchema,
+  projectVocalActivityToTimeline,
+  tempoRatioForBpm,
+  usableBeatGrid,
+  vocalActivityOverlapRatio,
+  type MusicalMeetingPoint,
+  type VocalActivityInterval,
+  type VocalSlotEvidence,
+} from "@workspace/arena/lib/waveyard/types";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { requireProjectRole } from "@workspace/arena/lib/waveyard/local-context";
 
@@ -41,7 +51,7 @@ type Discovery = { points: MusicalMeetingPoint[]; sourceStemId: string; sourceSe
 /** Re-derives ephemeral meeting points from persisted authoritative state. */
 async function discover(remix: typeof remixSessions.$inferSelect, stemId: string, sectionId: string): Promise<Discovery | null> {
   
-  const [sources, stems, analyses, sectionAnalyses, sections, tracks, phrasesRows] = await Promise.all([
+  const [sources, stems, analyses, sectionAnalyses, sections, tracks, phrasesRows, vocalAnalysisRows, activityRows] = await Promise.all([
     db.select().from(sourceAssets).where(eq(sourceAssets.projectId, remix.projectId)).orderBy(asc(sourceAssets.createdAt)),
     db.select().from(stemAssets).where(eq(stemAssets.projectId, remix.projectId)).orderBy(asc(stemAssets.createdAt)),
     db.select().from(sourceAnalyses).where(eq(sourceAnalyses.projectId, remix.projectId)).orderBy(asc(sourceAnalyses.createdAt)),
@@ -49,12 +59,22 @@ async function discover(remix: typeof remixSessions.$inferSelect, stemId: string
     db.select().from(sourceSections).where(eq(sourceSections.projectId, remix.projectId)).orderBy(asc(sourceSections.sourceAssetId), asc(sourceSections.sectionIndex)),
     db.select().from(remixTracks).where(eq(remixTracks.remixSessionId, remix.id)).orderBy(asc(remixTracks.sortOrder)),
     db.select().from(vocalPhrases).innerJoin(vocalAnalyses, eq(vocalPhrases.vocalAnalysisId, vocalAnalyses.id)).where(eq(vocalAnalyses.projectId, remix.projectId)),
+    db.select().from(vocalAnalyses).where(eq(vocalAnalyses.projectId, remix.projectId)),
+    db.select().from(vocalActivityIntervals).innerJoin(vocalAnalyses, eq(vocalActivityIntervals.vocalAnalysisId, vocalAnalyses.id))
+      .where(eq(vocalAnalyses.projectId, remix.projectId)),
   ]);
   const clips = tracks.length ? await db.select().from(remixClips).where(inArray(remixClips.remixTrackId, tracks.map((track) => track.id))) : [];
   const sourceById = new Map(sources.map((source) => [source.id, source]));
   const stemById = new Map(stems.map((stem) => [stem.id, stem]));
   const analysisBySource = new Map(analyses.map((analysis) => [analysis.sourceAssetId, analysis]));
   const sectionAnalysisBySource = new Map(sectionAnalyses.map((analysis) => [analysis.sourceAssetId, analysis]));
+  const vocalAnalysisByStem = new Map(vocalAnalysisRows.map((analysis) => [analysis.stemAssetId, analysis]));
+  const activityByAnalysisId = new Map<string, VocalActivityInterval[]>();
+  for (const row of activityRows) {
+    const events = activityByAnalysisId.get(row.vocal_analyses.id) ?? [];
+    events.push({ startMs: row.vocal_activity_intervals.startMs, endMs: row.vocal_activity_intervals.endMs, confidence: row.vocal_activity_intervals.confidence });
+    activityByAnalysisId.set(row.vocal_analyses.id, events);
+  }
   const sectionsBySource = new Map<string, typeof sections>();
   for (const section of sections) {
     const current = sectionsBySource.get(section.sourceAssetId) ?? [];
@@ -122,6 +142,7 @@ async function discover(remix: typeof remixSessions.$inferSelect, stemId: string
     phraseBoundaryStart: selectedStem.stemType === "vocals" && phraseEvidence.some((phrase) => closeTo(phrase.startMs, selectedSection.startMs, phraseTolerance)),
     phraseBoundaryEnd: selectedStem.stemType === "vocals" && phraseEvidence.some((phrase) => closeTo(phrase.endMs, selectedSection.endMs, phraseTolerance)),
     sectionEvidence: isManualSection ? "manual" as const : "detected" as const,
+    stemType: selectedStem.stemType,
     analysis: {
       status: sourceAnalysis.status,
       sourceChecksumSha256: sourceAnalysis.sourceChecksumSha256,
@@ -131,6 +152,48 @@ async function discover(remix: typeof remixSessions.$inferSelect, stemId: string
     },
   };
   const beatMs = 60_000 / remix.tempoBpm;
+  const placedVocalClips = clips.filter((clip) => stemById.get(clip.stemAssetId)?.stemType === "vocals");
+  let vocalSlotStatus: VocalSlotEvidence["status"] = placedVocalClips.length === 0
+    ? "no-existing-vocal-clip"
+    : "measured";
+  const placedVocalActivity: VocalActivityInterval[] = [];
+  if (placedVocalClips.length > 0) {
+    for (const clip of placedVocalClips) {
+      const targetStem = stemById.get(clip.stemAssetId);
+      const targetSource = targetStem ? sourceById.get(targetStem.sourceAssetId) : null;
+      const targetAnalysis = targetSource ? analysisBySource.get(targetSource.id) : null;
+      const vocalAnalysis = targetStem ? vocalAnalysisByStem.get(targetStem.id) : null;
+      const currentAnalysis = targetSource && targetStem && targetAnalysis?.status === "complete"
+        && targetAnalysis.projectId === remix.projectId
+        && targetAnalysis.sourceChecksumSha256 === targetSource.checksumSha256
+        && vocalAnalysis?.status === "complete"
+        && vocalAnalysis.projectId === remix.projectId
+        && vocalAnalysis.sourceAssetId === targetSource.id
+        && vocalAnalysis.stemAssetId === targetStem.id
+        && vocalAnalysis.sourceChecksumSha256 === targetSource.checksumSha256
+        && vocalAnalysis.stemChecksumSha256 === targetStem.checksumSha256
+        ? vocalAnalysis
+        : null;
+      const ratio = clip.tempoSyncEnabled
+        ? tempoRatioForBpm(remix.tempoBpm, targetAnalysis?.bpm ?? Number.NaN)
+        : 1;
+      const projected = currentAnalysis && targetStem && ratio !== null
+        ? projectVocalActivityToTimeline({
+          timelineStartMs: clip.timelineStartMs,
+          durationMs: clip.durationMs,
+          sourceOffsetMs: clip.sourceOffsetMs,
+          sourceDurationMs: Math.round(targetStem.durationSeconds * 1_000),
+          tempoRatio: ratio,
+          intervals: activityByAnalysisId.get(currentAnalysis.id) ?? [],
+        })
+        : null;
+      if (projected === null) {
+        vocalSlotStatus = "unavailable";
+        break;
+      }
+      placedVocalActivity.push(...projected);
+    }
+  }
   const targets = clips.flatMap((clip) => {
     const targetStem = stemById.get(clip.stemAssetId);
     const targetSource = targetStem ? sourceById.get(targetStem.sourceAssetId) : null;
@@ -141,6 +204,16 @@ async function discover(remix: typeof remixSessions.$inferSelect, stemId: string
     const barCount = matchingSection && (matchingSection.endBeatIndex - matchingSection.startBeatIndex) % 4 === 0
       ? (matchingSection.endBeatIndex - matchingSection.startBeatIndex) / 4
       : Number.isFinite(beatMs) ? Math.round(clip.durationMs / (beatMs * 4)) : null;
+    const vocalSlotEvidence: VocalSlotEvidence | null = selectedStem.stemType !== "vocals"
+      ? null
+      : vocalSlotStatus === "no-existing-vocal-clip"
+        ? { status: "no-existing-vocal-clip", overlapRatio: null }
+        : vocalSlotStatus === "unavailable"
+          ? { status: "unavailable", overlapRatio: null }
+          : (() => {
+            const overlapRatio = vocalActivityOverlapRatio(clip.timelineStartMs, clip.durationMs, placedVocalActivity);
+            return overlapRatio === null ? { status: "unavailable", overlapRatio: null } : { status: "measured", overlapRatio };
+          })();
     return [{
       targetClipId: clip.id,
       sourceAssetId: targetSource.id,
@@ -157,6 +230,7 @@ async function discover(remix: typeof remixSessions.$inferSelect, stemId: string
         musicalKey: targetAnalysis.musicalKey,
         beatGridMs: parsedBeatGrid(targetAnalysis.beatGrid),
       } : null,
+      vocalSlotEvidence,
     }];
   });
   return { points: discoverMusicalMeetingPoints({ source: sourceInput, targets, remixBpm: remix.tempoBpm, targetKey: remix.targetKey }), sourceStemId: stemId, sourceSectionId: sectionId };
